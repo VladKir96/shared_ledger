@@ -1,6 +1,8 @@
 package dev.sharedledger.presentation
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.ui.Alignment
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
@@ -29,6 +31,7 @@ private val tabs = listOf(
 @Composable
 fun LedgerApp(vm: LedgerViewModel, link: android.net.Uri? = null, clearLink: () -> Unit = {}) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val authCallback by vm.authCallback.collectAsStateWithLifecycle()
     val nav = rememberNavController()
     val backStack by nav.currentBackStackEntryAsState()
     val route = backStack?.destination?.route
@@ -92,6 +95,15 @@ fun LedgerApp(vm: LedgerViewModel, link: android.net.Uri? = null, clearLink: () 
                     }
                 }
                 composable("settings") { SettingsScreen(state, vm) }
+                composable("cloud-auth") {
+                    Column(Modifier.fillMaxSize()) {
+                        Row(Modifier.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            IconButton({ nav.popBackStack() }) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, tr("Back")) }
+                            Text(tr("Cloud sync"), style = MaterialTheme.typography.headlineSmall)
+                        }
+                        CloudSettings(state, vm)
+                    }
+                }
                 composable("entry/{type}/{id}/{duplicate}",
                     arguments = listOf(navArgument("duplicate") { type = NavType.BoolType })) { back ->
                     val type = EntryType.valueOf(back.arguments!!.getString("type")!!)
@@ -103,8 +115,11 @@ fun LedgerApp(vm: LedgerViewModel, link: android.net.Uri? = null, clearLink: () 
                 }
             }
         }
-        IncomingLink(link, vm, clearLink)
-        val item = state.ledger.entries.find { it.id == entryDetails }
+        val authState = authCallback
+        if (authState != null) {
+            AuthCallbackDialog(authState, vm) { nav.navigate("cloud-auth") { launchSingleTop = true } }
+        } else IncomingInvitation(link, vm, clearLink)
+        val item = if (authState == null) state.ledger.entries.find { it.id == entryDetails } else null
         if (item != null) AlertDialog(
             onDismissRequest = { entryDetails = null },
             title = { Text(state.ledger.categories.find { it.id == item.categoryId }?.name ?: "Transfer") },

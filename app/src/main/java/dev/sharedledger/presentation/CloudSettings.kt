@@ -24,6 +24,7 @@ import kotlinx.coroutines.withContext
 @Composable
 fun CloudSettings(state: LedgerState, vm: LedgerViewModel) {
     val session by vm.auth.session.collectAsState()
+    val busy by vm.busy.collectAsState()
     val status by vm.sync.status.collectAsState()
     val changes by vm.repository.dao.pendingFlow().collectAsState(initial = emptyList())
     val scopedChanges = changes.filter { change -> state.budgets.any { it.id == change.budgetId && it.principal == session?.userId } }
@@ -32,6 +33,7 @@ fun CloudSettings(state: LedgerState, vm: LedgerViewModel) {
     val budget = state.budget
     val context = LocalContext.current
     var signingUp by rememberSaveable { mutableStateOf(false) }
+    var emailNotice by rememberSaveable { mutableStateOf<String?>(null) }
     var email by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var name by rememberSaveable { mutableStateOf("") }
@@ -59,23 +61,42 @@ fun CloudSettings(state: LedgerState, vm: LedgerViewModel) {
         } else if (session == null) {
             item {
                 Panel {
-                    Text(if (signingUp) "Create an account" else "Sign in", style = MaterialTheme.typography.titleLarge)
+                    Text(tr(if (signingUp) "Create an account" else "Sign in"), style = MaterialTheme.typography.titleLarge)
+                    emailNotice?.let { Text(tr(it), color = MaterialTheme.colorScheme.primary) }
                     if (signingUp) Field(tr("Display name"), name, { name = it })
-                    Field(tr("Email"), email, { email = it })
+                    Field(tr("Email"), email, { email = it; emailNotice = null })
                     OutlinedTextField(password, { password = it }, label = { Text(tr("Password")) }, singleLine = true,
                         visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
                     Button({
                         val createName = name.takeIf { signingUp }
-                        vm.execute {
-                            val signedIn = vm.auth.signIn(email, password, createName)
-                            if (signedIn) vm.sync.synchronize() else vm.notice("Check your email to confirm registration.")
+                        var signedIn = false
+                        vm.execute(finished = {
+                            password = ""
+                            if (createName != null && !signedIn) {
+                                signingUp = false
+                                emailNotice = "Confirmation email requested. Open the newest link on this device."
+                            }
+                        }) {
+                            signedIn = vm.auth.signIn(email, password, createName)
+                            if (signedIn) vm.sync.synchronize()
                         }
-                    }, enabled = email.isNotBlank() && password.isNotBlank() && (!signingUp || name.isNotBlank()), modifier = Modifier.fillMaxWidth()) {
-                        Text(if (signingUp) "Create account" else "Sign in")
+                    }, enabled = !busy && email.isNotBlank() && password.isNotBlank() && (!signingUp || name.isNotBlank()), modifier = Modifier.fillMaxWidth()) {
+                        Text(tr(if (signingUp) "Create account" else "Sign in"))
                     }
-                    Row {
-                        TextButton({ signingUp = !signingUp }) { Text(if (signingUp) "Use existing account" else "Create account") }
-                        if (!signingUp) TextButton({ vm.execute("Check your email for a reset link.") { vm.auth.requestRecovery(email) } }) { Text(tr("Reset password")) }
+                    TextButton({ signingUp = !signingUp; emailNotice = null }, enabled = !busy) {
+                        Text(tr(if (signingUp) "Use existing account" else "Create account"))
+                    }
+                    if (!signingUp) {
+                        TextButton({
+                            vm.execute(finished = {
+                                emailNotice = "If the account exists and is unconfirmed, open the newest email on this device."
+                            }) { vm.auth.resendConfirmation(email) }
+                        }, enabled = !busy && email.isNotBlank()) { Text(tr("Resend confirmation email")) }
+                        TextButton({
+                            vm.execute(finished = {
+                                emailNotice = "Password reset requested. Open the email on this device."
+                            }) { vm.auth.requestRecovery(email) }
+                        }, enabled = !busy && email.isNotBlank()) { Text(tr("Reset password")) }
                     }
                 }
             }
@@ -218,7 +239,7 @@ private fun changeSummary(body: String): String {
 }
 
 @Composable
-fun IncomingLink(uri: android.net.Uri?, vm: LedgerViewModel, clear: () -> Unit) {
+fun IncomingInvitation(uri: android.net.Uri?, vm: LedgerViewModel, clear: () -> Unit) {
     if (uri == null || uri.scheme != "sharedledger") return
     val session by vm.auth.session.collectAsState()
     if (uri.host == "invite") {
@@ -230,16 +251,5 @@ fun IncomingLink(uri: android.net.Uri?, vm: LedgerViewModel, clear: () -> Unit) 
                     if (session != null) vm.execute("Budget joined", clear) { vm.sync.join(code) } else clear()
                 }) { Text(if (session == null) "Close" else "Join budget") }
             }, dismissButton = { TextButton(clear) { Text(tr("Cancel")) } })
-    } else if (uri.host == "auth" && uri.path == "/recovery") {
-        val code = uri.getQueryParameter("code")
-        var password by remember { mutableStateOf("") }
-        AlertDialog(onDismissRequest = clear, title = { Text(tr("Reset password")) }, text = {
-            if (code == null) Text("This reset link is invalid or expired.")
-            else OutlinedTextField(password, { password = it }, label = { Text(tr("New password")) }, visualTransformation = PasswordVisualTransformation())
-        }, confirmButton = {
-            TextButton({
-                if (code != null) vm.execute("Password updated. Sign in with your new password.", clear) { vm.auth.finishRecovery(code, password) }
-            }, enabled = code != null && password.length >= 8) { Text(tr("Update password")) }
-        }, dismissButton = { TextButton(clear) { Text(tr("Close")) } })
     }
 }

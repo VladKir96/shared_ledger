@@ -17,8 +17,6 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 import java.security.KeyStore
-import java.security.MessageDigest
-import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -29,16 +27,31 @@ import javax.inject.Singleton
 @Serializable
 data class Session(val userId: String, val access: String, val refresh: String, val expiresAt: Long, val email: String = "")
 
-class CloudError(val status: Int, message: String) : IllegalArgumentException(message)
+class CloudError(
+    val status: Int, message: String, val code: String? = null, val retryAfterSeconds: Long? = null
+) : IllegalArgumentException(message)
+
+interface AuthTransport {
+    suspend fun call(path: String, body: JsonObject? = null, token: String? = null, method: String? = null): JsonElement
+}
+
+interface AuthVault {
+    fun read(): Session?
+    fun write(session: Session)
+    fun clear()
+    fun readValue(name: String): String?
+    fun writeValue(name: String, value: String)
+    fun clearValue(name: String)
+}
 
 @Singleton
-class CloudApi @Inject constructor(val client: OkHttpClient) {
+class CloudApi @Inject constructor(val client: OkHttpClient) : AuthTransport {
     val url = BuildConfig.SUPABASE_URL.trimEnd('/')
     val key = BuildConfig.SUPABASE_PUBLISHABLE_KEY
     val configured = url.startsWith("https://") && key.isNotBlank()
     val realtimeUrl get() = url.replaceFirst("https://", "wss://") + "/realtime/v1/websocket?apikey=$key&vsn=1.0.0"
 
-    suspend fun call(path: String, body: JsonObject? = null, token: String? = null, method: String? = null): JsonElement =
+    override suspend fun call(path: String, body: JsonObject?, token: String?, method: String?): JsonElement =
         withContext(Dispatchers.IO) {
             require(configured) { "Add a Supabase project URL and publishable key to enable sync." }
             val builder = Request.Builder().url(url + path).header("apikey", key).header("Accept", "application/json")
@@ -51,10 +64,13 @@ class CloudApi @Inject constructor(val client: OkHttpClient) {
                     val parsed = try { ledgerJson.parseToJsonElement(value) } catch (_: Exception) { JsonNull }
                     if (!response.isSuccessful) {
                         val objectBody = parsed as? JsonObject
-                        val message = listOf("msg", "error_description", "message", "error").firstNotNullOfOrNull { field ->
+                        val message = if (path.startsWith("/auth/v1/")) null else listOf("msg", "error_description", "message", "error").firstNotNullOfOrNull { field ->
                             (objectBody?.get(field) as? JsonPrimitive)?.contentOrNull?.take(180)
                         }
-                        throw CloudError(response.code, message ?: "The server returned HTTP ${response.code}.")
+                        val code = (objectBody?.string("error_code") ?: objectBody?.string("code"))
+                            ?.takeIf { it.matches(Regex("[a-z][a-z0-9_]{0,63}")) }
+                        throw CloudError(response.code, message ?: "The server returned HTTP ${response.code}.",
+                            code, response.header("Retry-After")?.toLongOrNull())
                     }
                     parsed
                 }
@@ -68,7 +84,7 @@ class CloudApi @Inject constructor(val client: OkHttpClient) {
 }
 
 @Singleton
-class SessionVault @Inject constructor(@ApplicationContext context: Context) {
+class SessionVault @Inject constructor(@ApplicationContext context: Context) : AuthVault {
     private val prefs = context.getSharedPreferences("sharedledger.auth", Context.MODE_PRIVATE)
     private val alias = "dev.sharedledger.session.v1"
     private val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -81,13 +97,13 @@ class SessionVault @Inject constructor(@ApplicationContext context: Context) {
             generateKey()
         }
 
-    @Synchronized fun read(): Session? = readValue("identity")?.let {
+    @Synchronized override fun read(): Session? = readValue("identity")?.let {
         runCatching { ledgerJson.decodeFromString<Session>(it) }.getOrElse { clear(); null }
     }
 
-    @Synchronized fun write(session: Session) = writeValue("identity", ledgerJson.encodeToString(Session.serializer(), session))
+    @Synchronized override fun write(session: Session) = writeValue("identity", ledgerJson.encodeToString(Session.serializer(), session))
 
-    @Synchronized fun readValue(name: String): String? {
+    @Synchronized override fun readValue(name: String): String? {
         val saved = prefs.getString(name, null) ?: return null
         return try {
             val bytes = Base64.decode(saved, Base64.NO_WRAP)
@@ -100,120 +116,16 @@ class SessionVault @Inject constructor(@ApplicationContext context: Context) {
         }
     }
 
-    @Synchronized fun writeValue(name: String, value: String) {
+    @Synchronized override fun writeValue(name: String, value: String) {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key())
         val bytes = cipher.iv + cipher.doFinal(value.encodeToByteArray())
         check(prefs.edit().putString(name, Base64.encodeToString(bytes, Base64.NO_WRAP)).commit())
     }
 
-    @Synchronized fun clearValue(name: String) { prefs.edit().remove(name).commit() }
-    @Synchronized fun clear() { clearValue("identity") }
+    @Synchronized override fun clearValue(name: String) { prefs.edit().remove(name).commit() }
+    @Synchronized override fun clear() { clearValue("identity") }
 
-}
-
-@Singleton
-class CloudAuth @Inject constructor(private val api: CloudApi, private val vault: SessionVault, private val repository: dev.sharedledger.data.LedgerRepository) {
-    private val mutex = kotlinx.coroutines.sync.Mutex()
-    val session = kotlinx.coroutines.flow.MutableStateFlow<Session?>(null)
-
-    suspend fun restore() = locked { if (session.value == null) publish(vault.read()) }
-
-    suspend fun signIn(email: String, password: String, name: String?) = locked {
-        require(email.trim().length in 3..254 && '@' in email && password.length in 8..128) { "Enter a valid email and a password of at least eight characters." }
-        val body = buildJsonObject {
-            put("email", email.trim()); put("password", password)
-            if (name != null) put("data", buildJsonObject { put("display_name", name.trim().take(80)) })
-        }
-        val result = api.call(if (name == null) "/auth/v1/token?grant_type=password" else "/auth/v1/signup", body).jsonObject
-        sessionFrom(result)?.let { publish(it); true } ?: false
-    }
-
-    suspend fun requestRecovery(email: String) = locked {
-        require(email.trim().length in 3..254 && '@' in email) { "Enter your email address." }
-        val flags = Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
-        val verifier = Base64.encodeToString(ByteArray(32).also(SecureRandom()::nextBytes), flags)
-        val challenge = Base64.encodeToString(MessageDigest.getInstance("SHA-256").digest(verifier.encodeToByteArray()), flags)
-        vault.writeValue("recovery", verifier)
-        api.call("/auth/v1/recover?redirect_to=sharedledger%3A%2F%2Fauth%2Frecovery",
-            buildJsonObject {
-                put("email", email.trim())
-                put("code_challenge", challenge)
-                put("code_challenge_method", "s256")
-            })
-        Unit
-    }
-
-    suspend fun finishRecovery(code: String, password: String) = locked {
-        require(password.length in 8..128) { "Use at least eight characters." }
-        require(code.length in 8..512) { "The password reset link is invalid." }
-        val verifier = requireNotNull(vault.readValue("recovery")) { "Request a reset from this device and open the new link here." }
-        val response = api.call("/auth/v1/token?grant_type=pkce", buildJsonObject {
-            put("auth_code", code)
-            put("code_verifier", verifier)
-        }).jsonObject
-        vault.clearValue("recovery")
-        val access = response.string("access_token") ?: throw CloudError(401, "The password reset link has expired.")
-        api.call("/auth/v1/user", buildJsonObject { put("password", password) }, access, "PUT")
-        try { api.call("/auth/v1/logout?scope=local", buildJsonObject {}, access) } catch (_: CloudError) { }
-        Unit
-    }
-
-    suspend fun current(forceRefresh: Boolean = false): Session? = locked {
-        val old = session.value ?: vault.read()?.also { publish(it) } ?: return@locked null
-        if (!forceRefresh && old.expiresAt > System.currentTimeMillis() / 1000 + 45) return@locked old
-        try {
-            val value = api.call("/auth/v1/token?grant_type=refresh_token", buildJsonObject {
-                put("refresh_token", old.refresh)
-            }).jsonObject
-            val updated = sessionFrom(value) ?: throw CloudError(401, "Sign in again to resume sync.")
-            require(updated.userId == old.userId) { "The session identity changed. Sign in again." }
-            publish(updated)
-            updated
-        } catch (e: CloudError) {
-            if (e.status in listOf(400, 401, 403)) publish(null)
-            throw e
-        }
-    }
-
-    suspend fun signOut() = locked {
-        val old = session.value
-        publish(null)
-        vault.clearValue("recovery")
-        if (old != null) try {
-            api.call("/auth/v1/logout?scope=local", buildJsonObject { }, old.access)
-        } catch (_: CloudError) {
-            // Local sign-out succeeds when the service is unreachable.
-        }
-    }
-
-    suspend fun deleteAccount() {
-        val current = current() ?: throw CloudError(401, "Sign in first.")
-        api.call("/functions/v1/delete-account", buildJsonObject { }, current.access)
-        repository.purgePrincipal(current.userId)
-        signOut()
-    }
-
-    private fun publish(value: Session?) {
-        if (value == null) vault.clear() else vault.write(value)
-        repository.principal.value = value?.userId
-        session.value = value
-    }
-
-    private fun sessionFrom(json: JsonObject): Session? {
-        val access = json.string("access_token") ?: return null
-        val refresh = json.string("refresh_token") ?: return null
-        val user = json["user"] as? JsonObject ?: return null
-        val id = user.string("id") ?: return null
-        val expires = json["expires_at"]?.jsonPrimitive?.longOrNull
-            ?: (System.currentTimeMillis() / 1000 + (json["expires_in"]?.jsonPrimitive?.longOrNull ?: 3600))
-        return Session(id, access, refresh, expires, user.string("email").orEmpty())
-    }
-
-    private suspend fun <T> locked(action: suspend () -> T): T {
-        mutex.lock()
-        try { return action() } finally { mutex.unlock() }
-    }
 }
 
 fun JsonObject.string(key: String): String? = (get(key) as? JsonPrimitive)?.contentOrNull

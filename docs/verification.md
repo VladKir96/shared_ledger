@@ -7,7 +7,7 @@
 | Financial features | `Rates.kt`, `Recurring.kt`, `Reports.kt`, `Analytics.kt`, `Portability.kt` | Debug build and automated money, recurrence, migration and file round-trip tests |
 | Release preparation | Language resources, UI tests, Room schema exports, documentation and build configuration | Use the build/test commands in the README |
 
-To run the database tests against a **disposable** Supabase CLI database after applying migrations:
+For hosted setup instructions, see the [complete setup guide](setup-guide.md). To run the database tests, start a **disposable local Supabase stack** with `supabase start` and check that both repository migrations have been applied to it. Run the following from the repository root with a PostgreSQL client installed. This example uses the default local port and development credentials.
 
 ```sh
 psql 'postgresql://postgres:postgres@127.0.0.1:54322/postgres' -v ON_ERROR_STOP=1 -f supabase/tests/ledger.sql
@@ -21,6 +21,14 @@ The project produced the debug APK, unsigned release APK and release AAB with Gr
 
 On the connected Android 15 emulator, the app downloaded all 30 starting-currency pairs on launch without opening Settings. Normal Save recorded a live EUR-to-RSD conversion with its rate, date, and provider. A separate historical EUR expense was saved in airplane mode and automatically converted after reconnection. Its original amount and transaction date were preserved.
 
+The setup guide was checked against Supabase CLI 3.2.0 help and the linked vendor documentation. The debug build, JVM tests, and lint were rerun on macOS with JDK 17 and Android SDK 35. Windows and Linux installation steps follow the linked platform documentation and were outside this run.
+
+## Android email authentication
+
+The debug build passed 18 JVM tests and 15 instrumented tests on an Android 15 emulator in airplane mode. Android opened both auth links in the app. The tests exercised a closed activity, a running activity, a background activity, and activity recreation. The mocked Auth tests verified signup and resend requests, PKCE exchange, confirmation of the returned account, password updates and sign-in with the new password, rate limits, invalid or consumed links, and preservation of a different active account. Transaction entry and search also passed on a separate offline-only build with no Supabase settings. Android lint reported zero errors and five warnings.
+
+The signed APK embeds the project URL and public key from `cloud.properties`. Hosted email delivery and clicking a link from an actual inbox still need to be checked on the configured project. Complete the [hosted email walkthrough](setup-guide.md#supabase-email-authentication-and-android-deep-links) with a disposable account.
+
 ## Deployed project acceptance
 
 Use two separate confirmed accounts on two Android devices connected to the same test project.
@@ -33,6 +41,6 @@ Use two separate confirmed accounts on two Android devices connected to the same
 6. Revoke access from the owner device. After the other device syncs, verify the budget is removed from its ledger and direct requests are denied. Sign in with another account on the same device and verify account isolation.
 7. Export a budget to JSON, restore it into a clean installation, then import it again. Verify relationships and check the duplicate count.
 
-Live Supabase Auth, Realtime and account deletion require project configuration. The local checks do not validate hosted email delivery or the deployed Edge Function.
+A cloud-configured debug APK was also clean-built and signature-verified. The embedded public configuration matched the local properties file, and the configured Auth settings endpoint returned HTTP 200. That check validates gateway access. Complete the [two-device walkthrough](setup-guide.md#11-create-and-join-a-shared-budget) on your own project to verify sign-in, sync, and Realtime. Independently test hosted confirmation and recovery email delivery and the deployed Edge Function using disposable accounts.
 
 The optional hosted integration check uses two existing confirmed accounts in a disposable project. Set `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `LEDGER_TEST_OWNER_EMAIL`, `LEDGER_TEST_OWNER_PASSWORD`, `LEDGER_TEST_EDITOR_EMAIL`, and `LEDGER_TEST_EDITOR_PASSWORD` in the command environment. Then run `python3 scripts/verify_cloud.py`. It creates and soft-deletes test budgets and checks real sign-in, RPC behavior, matching snapshots, conflicts and revocation.

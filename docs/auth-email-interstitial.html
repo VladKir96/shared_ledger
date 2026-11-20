@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en" data-project-url="">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex, nofollow">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <title>SharedLedger email verification</title>
+  <style>
+    body { font: 1rem/1.5 system-ui, sans-serif; margin: 12vh auto; max-width: 30rem; padding: 0 1.5rem; }
+    button { font: inherit; padding: .6rem 1rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>SharedLedger</h1>
+    <p id="message">Open the newest email link on the Android device that requested it.</p>
+    <button id="continue" type="button" hidden>Continue</button>
+  </main>
+  <script>
+    const action = document.getElementById('continue')
+    const message = document.getElementById('message')
+    const inbound = new URL(location.href)
+    const links = inbound.searchParams.getAll('confirmation_url')
+    // Remove the one-time link from the address bar after reading it.
+    if (inbound.search || inbound.hash) history.replaceState(null, '', inbound.pathname)
+
+    function verificationLink() {
+      if (links.length !== 1) return null
+      try {
+        const project = new URL(document.documentElement.dataset.projectUrl)
+        const link = new URL(links[0])
+        if (project.protocol !== 'https:' || link.origin !== project.origin || link.username ||
+            link.password || link.pathname !== '/auth/v1/verify' || link.hash) return null
+
+        const tokens = link.searchParams.getAll('token')
+        const types = link.searchParams.getAll('type')
+        const redirects = link.searchParams.getAll('redirect_to')
+        if (tokens.length !== 1 || !tokens[0].startsWith('pkce_') ||
+            types.length !== 1 || redirects.length !== 1) return null
+
+        const type = types[0]
+        const redirect = redirects[0]
+        if (type === 'recovery' && redirect === 'sharedledger://auth/recovery') return link
+        if ((type === 'signup' || type === 'email') && redirect === 'sharedledger://auth/confirm') return link
+      } catch {
+        return null
+      }
+      return null
+    }
+
+    const link = verificationLink()
+    if (link) {
+      const recovery = link.searchParams.get('type') === 'recovery'
+      message.textContent = 'Continue on the Android device that requested this email.'
+      action.textContent = recovery ? 'Reset password in SharedLedger' : 'Confirm email in SharedLedger'
+      action.hidden = false
+      action.addEventListener('click', () => {
+        action.disabled = true
+        location.replace(link.href)
+      }, { once: true })
+    }
+  </script>
+</body>
+</html>

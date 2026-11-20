@@ -1,62 +1,100 @@
 # SharedLedger
 
-SharedLedger is a native Android expense tracker for personal and shared budgets. It runs offline without an account and contains no advertising, purchases, or subscriptions.
+SharedLedger is a native Android expense tracker for personal and shared budgets. You can start with a personal budget on one phone, or connect a hosted Supabase project so multiple people can work on the same budget. The app is free and ad-free. It supports offline entry, recurring transactions, analytics, and file import and export.
 
-## Build and run
+**New to Android development or Supabase? Start with the [complete setup guide](docs/setup-guide.md).** It walks through installing the tools, configuring a hosted project, building and installing the APK, and checking synchronization with two separate accounts.
 
-Use JDK 17, Android SDK Platform 35 and Build Tools 35.0.0. Open this directory in Android Studio and run the `app` configuration on Android 8.0 or later. Android Studio can write your SDK location to `local.properties`. For terminal builds, set `JAVA_HOME` and `ANDROID_HOME` to your installations.
+## Features
 
-```sh
-./gradlew assembleDebug
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+- Track income, expenses, accounts, categories, and transfers. Search transactions and compare balances and spending in Analytics.
+- Work offline with a local SQLite database. Cloud-enabled budgets queue edits locally and synchronize after reconnection.
+- Share budgets through one-use invitations. Owners manage access, Editors can record transactions, and Viewers have read-only access.
+- Preview conversions using automatically refreshed daily and historical rates. Supported starting currencies are RSD, EUR, RUB, USD, GBP, and CHF. Recorded conversions retain their rate and source, and manual overrides are available under **Settings → Exchange rates**. [Frankfurter v2](https://frankfurter.dev/) · [Currency API fallback](https://github.com/fawazahmed0/exchange-api)
+- Schedule recurring transactions and export budgets from **Settings → Import and export**. JSON preserves budget relationships and transfers. The [file format guide](docs/files.md) describes CSV mapping and import limits.
+- Choose English, Russian, or Serbian for core interface labels. Some messages and default category names are in English. Currency amounts and dates follow the device format.
+
+## Requirements
+
+| Item | Version or purpose |
+| --- | --- |
+| Java | JDK **17**, including a Java compiler |
+| Android SDK | **Android SDK Platform 35**, **Build Tools 35.0.0**, and **Platform-Tools** for ADB |
+| Android Studio | Recommended for setup and running the app. See [Android tool installation](docs/setup-guide.md#1-install-the-android-tools). |
+| Gradle | The checked-in wrapper downloads **Gradle 8.11.1**. |
+| Android phone or emulator | **Android 8.0 (API 26)** or later |
+| Cloud setup only | A hosted Supabase project, Supabase CLI, and two Android devices with separate test accounts for the sync walkthrough |
+
+## Quick start in offline mode
+
+1. Get the repository source and open the project folder. It contains `gradlew`, `gradlew.bat`, `app/`, and `supabase/`.
+2. Install [JDK 17 and the Android SDK](docs/setup-guide.md#1-install-the-android-tools). In Android Studio, open the project root and let it sync. For a terminal build, follow the guide to set `JAVA_HOME` and `ANDROID_HOME`.
+3. From a fresh checkout, leave `cloud.properties` absent and keep the two Supabase environment variables unset. Run this command from the project root.
+
+   ```sh
+   ./gradlew assembleDebug
+   ```
+
+   In Windows PowerShell, run `.\gradlew.bat assembleDebug`. The first build downloads dependencies. Look for `BUILD SUCCESSFUL` and the file `app/build/outputs/apk/debug/app-debug.apk`.
+4. [Install the APK on a phone](docs/setup-guide.md#10-install-on-an-android-phone), or run the `app` configuration from Android Studio. On first launch, SharedLedger opens the **Personal** budget with a **Cash** account in RSD. Try **Expense → Choose category → Save expense**. **Settings → Cloud sync** shows **Local mode** in an offline-only build.
+
+## Set up shared budgets
+
+Follow the [hosted setup walkthrough](docs/setup-guide.md#2-create-a-hosted-supabase-project) in order. It covers the project URL and publishable key, the CLI, the database migrations, the account-deletion function, email setup, Realtime, and the cloud-enabled APK.
+
+- [Apply the migrations to the linked project](docs/setup-guide.md#5-apply-and-verify-the-database-migrations) if a CLI command tries to connect to `127.0.0.1:54322`.
+- [Configure the Android build](docs/setup-guide.md#8-configure-the-android-app) if **Cloud sync** shows **Local mode**. Gradle reads `cloud.properties` at build time, so changing the file requires rebuilding and installing the APK.
+- [Test with two devices](docs/setup-guide.md#11-create-and-join-a-shared-budget) using the same cloud-enabled build and two different accounts.
+
+## Supabase Email Authentication and Android Deep Links
+
+In the hosted Supabase Dashboard, open **Authentication → URL Configuration**. Replace `http://localhost:3000` with `sharedledger://auth/confirm` as the **Site URL**. On a phone, localhost points to the phone itself. Add both of these exact entries under **Redirect URLs** and save.
+
+```text
+sharedledger://auth/confirm
+sharedledger://auth/recovery
 ```
 
-Use `gradlew.bat` on Windows. The first build downloads the pinned Gradle distribution and project dependencies. With no cloud configuration, the app starts with an empty personal budget, a cash account in RSD and the default categories.
+Keep **Confirm email** enabled and keep the generated `{{ .ConfirmationURL }}` link in both the confirmation and recovery templates. SharedLedger supplies the matching redirect in each request. The default flow works without a website. Applying the database migrations does not update these Dashboard settings.
+
+Register a disposable account from **Settings → Cloud sync → Create account**. Open the newest confirmation email on the same Android installation, wait for **Email verified**, then tap **Continue**. Test **Reset password** from the signed-out Cloud sync form. Open the newest recovery link on that phone, tap **Update password** after entering the new password, and sign in again. SharedLedger exchanges each one-time code using an encrypted verifier stored on the Android installation that requested the email.
+
+An existing unconfirmed account can use **Resend confirmation email** from the Cloud sync sign-in form after entering its email. An `otp_expired` response can indicate a past expiry, a previously used or superseded link, or a mail scanner that opened the link first. Check whether the account is already confirmed and try signing in. If needed, request a fresh link and open the newest email on the requesting device. See the setup guide for invalid links, optional scanner protection, and verified HTTPS Android App Links. [Detailed email configuration and testing](docs/setup-guide.md#supabase-email-authentication-and-android-deep-links)
+
+## Build artifacts and tests
+
+| Build | Command from the repository root | Output |
+| --- | --- | --- |
+| Debug APK, signed with the build machine's debug key | `./gradlew assembleDebug` | `app/build/outputs/apk/debug/app-debug.apk` |
+| Unsigned release APK | `./gradlew assembleRelease` | `app/build/outputs/apk/release/app-release-unsigned.apk` |
+| Unsigned Android App Bundle | `./gradlew bundleRelease` | `app/build/outputs/bundle/release/app-release.aab` |
+
+Use `.\gradlew.bat` instead of `./gradlew` in Windows PowerShell. For distribution, use [Android Studio's signing workflow](docs/setup-guide.md#9-build-the-apk) and keep the private signing key outside the repository.
+
+Run the JVM tests and Android lint from the repository root.
 
 ```sh
 ./gradlew testDebugUnitTest lintDebug
+```
+
+With a running Android emulator or an authorized USB-connected phone, run the instrumented tests.
+
+```sh
 ./gradlew connectedDebugAndroidTest
 ```
 
-The connected suite needs an emulator or device. It covers Room migrations, startup exchange-rate refresh, offline conversion and retries, recurrence, JSON round trips, outbox staging, and core Compose interactions.
+See [verification notes](docs/verification.md) for recorded results, the disposable database test, and the optional hosted test script.
 
-## Use a Supabase project
+## Project layout
 
-1. Create a dedicated Supabase project and install the [Supabase CLI](https://supabase.com/docs/guides/local-development/cli/getting-started).
-2. Link the project and push the versioned migrations from the repository root. Use a dedicated test project for acceptance testing.
-   
-   ```sh
-   supabase login
-   supabase link --project-ref YOUR_PROJECT_REF
-   supabase db push
-   supabase functions deploy delete-account --no-verify-jwt
-   ```
-   
-   The account deletion function verifies the caller with Supabase Auth and uses the service-role key inside the function runtime.
-3. In **Authentication → URL Configuration**, add `sharedledger://auth/recovery` as an allowed redirect. Keep the email provider enabled and configure SMTP for delivery. A password reset must be requested and completed on the same device because the Android app stores the PKCE verifier locally. Keep the confirmation email configured to send users to a site that can tell them to return to the app and sign in.
-4. Copy `cloud.properties.example` to `cloud.properties` and fill in the project HTTPS URL and **publishable key**. The same property names can be supplied as environment variables for CI. Never use a service-role key or server secret in an Android build.
-5. Rebuild and install on two devices. Open **Settings → Cloud sync** to sign in. Create a shared budget under **Settings → Budgets** and use **Cloud sync** to generate an editor or viewer invitation. Share the code or deep link. The recipient can paste the code after signing in with a separate account.
-6. To upload an existing personal budget, select the budget and choose **Enable sync for this budget** under **Cloud sync**. Back up any local data before testing account deletion.
+| Path | Purpose |
+| --- | --- |
+| [`app/`](app/) | Native Android app, Gradle settings, Room schema snapshots, and tests |
+| [`presentation/`](app/src/main/java/dev/sharedledger/presentation/) | Jetpack Compose screens, navigation, and view models |
+| [`domain/`](app/src/main/java/dev/sharedledger/domain/) | Money calculations, dates, and reporting |
+| [`data/`](app/src/main/java/dev/sharedledger/data/) | Room, ledger operations, exchange rates, and file import and export |
+| [`sync/`](app/src/main/java/dev/sharedledger/sync/) | Supabase Auth, Realtime, the synchronization outbox, and WorkManager jobs |
+| [`supabase/migrations/`](supabase/migrations/) | PostgreSQL schema, Row Level Security, and authenticated database functions |
+| [`supabase/functions/`](supabase/functions/) | The `delete-account` Edge Function |
+| [`docs/`](docs/) | Setup, data model, file formats, and verification |
 
-The migration adds the budget table to the Supabase Realtime publication. Verify that the publication exists and that the table is enabled in the project. WorkManager and the Sync now action can still pull changes if Realtime is temporarily unavailable.
-
-## Release artifacts
-
-```sh
-./gradlew assembleRelease bundleRelease
-```
-
-Outputs are in `app/build/outputs/apk/release/` and `app/build/outputs/bundle/release/`. For a distribution build, use Android Studio's **Generate Signed Bundle / APK** and supply your own upload key. Keep signing material outside the repository. The terminal commands above produce unsigned release outputs.
-
-## Operating notes
-
-- Amounts are entered in the original currency and rounded to currency minor units using half-even rounding. The editor automatically looks up the rate for the selected date and previews the account and budget amounts. Save can complete while a lookup is underway. Pending conversions are filled after a valid rate becomes available, while recorded rates and manual overrides are preserved.
-- **Settings → Exchange rates** shows the provider, quote dates, and last successful refresh. Background updates are on by default. Turning them off pauses scheduled refreshes and background retries. The editor still looks up rates on demand, and **Refresh now** can run a refresh manually.
-- A transfer moves balances between two accounts. For a cross-currency transfer, enter the amount received. Net cash flow and spending charts exclude transfers.
-- Monthly and annual rules keep their original calendar anchor. A January 31 rule falls on the last valid day in February, then returns to March 31. Android can defer recurring background work. Open the app to trigger an immediate due check.
-- JSON is the full-fidelity backup format. The [file format and import behavior](docs/files.md) describe how CSV imports are mapped.
-- Numbers and dates follow the device format. The language picker changes translated interface labels independently. User-entered names, default category names, and some dynamic messages remain in English.
-- The [data model and sync protocol](docs/schema.md) cover RLS, conflict handling, and local state. The [verification notes](docs/verification.md) describe what has been tested and what needs a deployed project.
-
-Frankfurter v2 supplies daily and historical rates. The dated Currency API provides a fallback when Frankfurter has no usable quote. RSD, EUR, RUB, USD, GBP and CHF were checked against live provider responses. Historical coverage varies by pair and date. The editor displays the actual date and source of each quote. [Frankfurter API](https://frankfurter.dev/) · [Currency API](https://github.com/fawazahmed0/exchange-api)
-# shared_ledger
+The [data model and sync protocol](docs/schema.md) explain how local changes reach Supabase and how devices handle version conflicts. The setup guide includes [credential safety and backups](docs/setup-guide.md#14-security-and-backups) and a [troubleshooting checklist](docs/setup-guide.md#13-troubleshooting).

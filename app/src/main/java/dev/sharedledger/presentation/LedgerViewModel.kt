@@ -10,7 +10,12 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import java.math.BigDecimal
 import javax.inject.Inject
+import dev.sharedledger.sync.AuthLink
+import dev.sharedledger.sync.AuthLinkProblem
 import dev.sharedledger.sync.CloudAuth
+import dev.sharedledger.sync.CloudError
+import dev.sharedledger.sync.ConfirmationResult
+import dev.sharedledger.sync.EmailPurpose
 import dev.sharedledger.sync.SyncEngine
 import dev.sharedledger.sync.RateNetwork
 
@@ -27,6 +32,11 @@ class LedgerViewModel @Inject constructor(val repository: LedgerRepository, val 
     private val events = Channel<String>(Channel.BUFFERED)
     val messages = events.receiveAsFlow()
     val busy = MutableStateFlow(false)
+    private val callback = MutableStateFlow<AuthCallback?>(null)
+    val authCallback = callback.asStateFlow()
+    private var activeLink: AuthLink? = null
+    private var nextLink: AuthLink? = null
+    private var authJob: Job? = null
     val period = MutableStateFlow(Period())
     val filters = MutableStateFlow(Filters())
     private val options = combine(repository.principal.flatMapLatest(repository.dao::budgets), repository.dao.preferencesFlow()) { budgets, preferences ->
@@ -75,6 +85,91 @@ class LedgerViewModel @Inject constructor(val repository: LedgerRepository, val 
             }
         }
     }
+
+    fun acceptAuthLink(link: AuthLink) {
+        val active = activeLink
+        if (active == link || active is AuthLink.Code && link is AuthLink.Code &&
+            active.purpose == link.purpose && active.fingerprint == link.fingerprint) return
+        if (authJob?.isActive == true) nextLink = link else showAuthLink(link)
+    }
+
+    fun dismissAuthCallback() {
+        if (authJob?.isActive == true) return
+        callback.value = null
+        activeLink = null
+    }
+
+    fun retryAuthCallback(link: AuthLink.Code) {
+        if (authJob?.isActive != true) showAuthLink(link)
+    }
+
+    private fun showAuthLink(link: AuthLink) {
+        activeLink = link
+        if (link is AuthLink.Invalid) {
+            callback.value = AuthCallback.Failed(link.purpose, when (link.problem) {
+                AuthLinkProblem.INVALID -> "This email link is invalid. Request a new one in Cloud sync."
+                AuthLinkProblem.EXPIRED_OR_USED -> "This email link has expired or has already been used. Request a new one."
+                AuthLinkProblem.FAILED -> "Supabase could not verify this email link. Request a new one."
+            })
+            return
+        }
+        if (!sync.configured) {
+            callback.value = AuthCallback.Failed(link.purpose, "This build uses local mode. Install a cloud-enabled build to open email links.")
+            return
+        }
+        link as AuthLink.Code
+        callback.value = AuthCallback.Checking(link.purpose)
+        runAuthCallback {
+            callback.value = try {
+                if (link.purpose == EmailPurpose.CONFIRMATION) {
+                    val result = withContext(Dispatchers.IO) { auth.confirmEmail(link) }
+                    AuthCallback.Complete(link.purpose, if (result == ConfirmationResult.SIGNED_IN)
+                        "Your email is verified and you are signed in."
+                    else "Your email is verified. To use the verified account, sign out of the current account and sign in again.")
+                } else {
+                    withContext(Dispatchers.IO) { auth.authorizeRecovery(link) }
+                    AuthCallback.Password(link)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val canRetry = e is CloudError && (e.status == 0 || e.status == 429 || e.status >= 500)
+                AuthCallback.Failed(link.purpose, authMessage(e), link.takeIf { canRetry })
+            }
+        }
+    }
+
+    fun updateRecoveredPassword(link: AuthLink.Code, password: String) {
+        if (authJob?.isActive == true) return
+        val form = callback.value as? AuthCallback.Password ?: return
+        if (form.link != link) return
+        callback.value = form.copy(saving = true, error = null)
+        runAuthCallback {
+            callback.value = try {
+                withContext(Dispatchers.IO) { auth.finishRecovery(link, password) }
+                AuthCallback.Complete(link.purpose, "Your password was updated. Use the new password the next time you sign in.")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (e is CloudError && e.status == 410) AuthCallback.Failed(link.purpose, authMessage(e))
+                else form.copy(saving = false, error = authMessage(e))
+            }
+        }
+    }
+
+    private fun runAuthCallback(action: suspend () -> Unit) {
+        authJob = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            action()
+            nextLink?.let {
+                nextLink = null
+                showAuthLink(it)
+            }
+        }
+        authJob?.start()
+    }
+
+    private fun authMessage(error: Exception) = (error as? IllegalArgumentException)?.message
+        ?: "The email request could not be completed. Please try again."
 
     fun notice(message: String) { events.trySend(message) }
 }
