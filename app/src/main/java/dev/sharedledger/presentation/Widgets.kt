@@ -1,0 +1,266 @@
+package dev.sharedledger.presentation
+
+import android.app.DatePickerDialog
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import dev.sharedledger.data.*
+import dev.sharedledger.domain.*
+import java.math.BigDecimal
+import java.math.MathContext
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
+import kotlin.math.atan2
+import kotlin.math.hypot
+
+fun Enum<*>.label(): String = name.lowercase().replace('_', ' ').replaceFirstChar { it.titlecase() }
+
+fun LocalDate.shortDate(): String = format(DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM).withLocale(LedgerFormats.locale))
+fun Period.title(): String = when (mode) {
+    PeriodMode.ALL -> "All time"
+    PeriodMode.MONTH -> anchor.format(DateTimeFormatter.ofPattern("LLLL yyyy", LedgerFormats.locale)).replaceFirstChar { it.titlecase() }
+    PeriodMode.YEAR -> anchor.year.toString()
+    PeriodMode.DAY, PeriodMode.SPECIFIC -> anchor.shortDate()
+    else -> "${span.from?.shortDate().orEmpty()} – ${span.to?.shortDate().orEmpty()}"
+}
+
+@Composable
+fun <T> Select(label: String, current: T, options: List<T>, describe: (T) -> String, modifier: Modifier = Modifier, onSelect: (T) -> Unit) {
+    var show by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    OutlinedButton(onClick = { show = true }, modifier = modifier, shape = RoundedCornerShape(12.dp), enabled = options.isNotEmpty()) {
+        Column(Modifier.weight(1f)) {
+            Text(tr(label), style = MaterialTheme.typography.labelSmall)
+            Text(tr(describe(current)), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Icon(Icons.Outlined.ExpandMore, null, Modifier.size(18.dp))
+    }
+    if (show) Dialog(onDismissRequest = { show = false }) {
+        var query by remember { mutableStateOf("") }
+        Panel(Modifier.fillMaxWidth().heightIn(max = 524.dp)) {
+            Text(tr(label), style = MaterialTheme.typography.titleLarge)
+            if (options.size > 10) Field(tr("Search"), query, { query = it })
+            LazyColumn(Modifier.weight(1f, fill = false)) {
+                items(options.filter { translated(context, describe(it)).contains(query, true) }) { option ->
+                    ListItem(
+                        headlineContent = { Text(tr(describe(option))) },
+                        trailingContent = { if (option == current) Icon(Icons.Outlined.Check, "Selected") },
+                        modifier = Modifier.clickable { onSelect(option); show = false }
+                    )
+                }
+            }
+            TextButton({ show = false }, Modifier.align(Alignment.End)) { Text(tr("Cancel")) }
+        }
+    }
+}
+
+@Composable
+fun Field(label: String, value: String, onChange: (String) -> Unit, modifier: Modifier = Modifier, singleLine: Boolean = true) {
+    OutlinedTextField(value, onChange, label = { Text(label) }, modifier = modifier.fillMaxWidth(), singleLine = singleLine,
+        shape = RoundedCornerShape(12.dp))
+}
+
+@Composable
+fun DateButton(label: String, date: LocalDate, modifier: Modifier = Modifier, onDate: (LocalDate) -> Unit) {
+    val context = LocalContext.current
+    OutlinedButton({
+        DatePickerDialog(context, { _, year, month, day -> onDate(LocalDate.of(year, month + 1, day)) },
+            date.year, date.monthValue - 1, date.dayOfMonth).show()
+    }, modifier, shape = RoundedCornerShape(12.dp)) {
+        Icon(Icons.Outlined.CalendarToday, null, Modifier.size(16.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(listOf(tr(label), date.shortDate()).filter { it.isNotBlank() }.joinToString(" "), maxLines = 1)
+    }
+}
+
+@Composable
+fun PeriodControl(period: Period, onPeriod: (Period) -> Unit, extended: Boolean = false) {
+    var show by remember { mutableStateOf(false) }
+    var mode by remember(period.mode) { mutableStateOf(period.mode) }
+    var from by remember(period) { mutableStateOf(period.span.from ?: period.anchor) }
+    var to by remember(period) { mutableStateOf(period.span.to ?: period.anchor) }
+    val modes = PeriodMode.entries.filter { extended || it !in listOf(PeriodMode.THREE_MONTHS, PeriodMode.SIX_MONTHS) }
+    Surface(
+        modifier = Modifier.fillMaxWidth().pointerInput(period) {
+            var drag = 0f
+            detectHorizontalDragGestures(onDragStart = { drag = 0f }, onDragEnd = {
+                if (kotlin.math.abs(drag) > 45.dp.toPx()) onPeriod(period.shift(if (drag < 0) 1 else -1))
+            }) { change, distance -> change.consume(); drag += distance }
+        }, shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surface
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton({ onPeriod(period.shift(-1)) }, enabled = period.mode != PeriodMode.ALL) { Icon(Icons.Outlined.ChevronLeft, "Previous period") }
+            TextButton({ show = true }, Modifier.weight(1f)) {
+                Icon(Icons.Outlined.CalendarToday, null, Modifier.size(16.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(tr(period.title()), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            IconButton({ onPeriod(period.shift(1)) }, enabled = period.mode != PeriodMode.ALL) { Icon(Icons.Outlined.ChevronRight, "Next period") }
+        }
+    }
+    if (show) AlertDialog(
+        onDismissRequest = { show = false }, title = { Text(tr("Date range")) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Select("Period", mode, modes, { if (it == PeriodMode.SPECIFIC) "Specific date" else it.label() }, Modifier.fillMaxWidth()) { mode = it }
+                if (mode != PeriodMode.ALL) DateButton(if (mode == PeriodMode.CUSTOM) "From" else "", from, Modifier.fillMaxWidth()) { from = it }
+                if (mode == PeriodMode.CUSTOM) DateButton("Through", to, Modifier.fillMaxWidth()) { to = it }
+            }
+        },
+        confirmButton = {
+            TextButton({
+                onPeriod(Period(mode, from, if (mode == PeriodMode.CUSTOM) DateSpan(from, to) else DateSpan()))
+                show = false
+            }, enabled = mode != PeriodMode.CUSTOM || from <= to) { Text(tr("Apply")) }
+        }, dismissButton = { TextButton({ show = false }) { Text(tr("Cancel")) } }
+    )
+}
+
+data class Slice(val id: String?, val name: String, val color: Long, val icon: String, val amount: BigDecimal)
+
+fun slices(entries: List<Entry>, currency: String, type: EntryType, categories: List<Category>): List<Slice> {
+    val index = categories.associateBy { it.id }
+    return spendingBy(entries, currency, type) { it.categoryId }.filterValues { it.signum() > 0 }.map { (key, amount) ->
+        val category = index[key]
+        Slice(key, category?.name ?: "Uncategorized", category?.color ?: 0xFF82968A, category?.icon ?: "more", amount)
+    }
+}
+
+@Composable
+fun Distribution(entries: List<Entry>, currency: String, categories: List<Category>, onDrill: (EntryType, String?) -> Unit) {
+    var type by remember { mutableStateOf(EntryType.EXPENSE) }
+    var selected by remember(entries, type) { mutableStateOf<Slice?>(null) }
+    val groups by produceState(emptyList<Slice>(), entries, currency, type, categories) {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { slices(entries, currency, type, categories) }
+    }
+    val pieces = remember(groups) {
+        if (groups.size <= 6) groups else groups.take(5) + Slice("other", "Other categories", 0xFF82968A, "more",
+            groups.drop(5).fold(BigDecimal.ZERO) { sum, slice -> sum + slice.amount })
+    }
+    val total = pieces.fold(BigDecimal.ZERO) { sum, slice -> sum + slice.amount }
+    val weights = remember(pieces, total) {
+        pieces.map { it.amount.divide(total, MathContext.DECIMAL64).toFloat() }
+    }
+    val ringTrack = MaterialTheme.colorScheme.surfaceVariant
+    val progress by androidx.compose.animation.core.animateFloatAsState(if (pieces.isEmpty()) 0f else 1f, label = "Chart")
+    Panel(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(tr("Breakdown"), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+            Icon(Icons.Outlined.DonutLarge, null, tint = MaterialTheme.colorScheme.primary)
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(type == EntryType.EXPENSE, { type = EntryType.EXPENSE }, { Text(tr("Expenses")) })
+            FilterChip(type == EntryType.INCOME, { type = EntryType.INCOME }, { Text(tr("Income")) })
+        }
+        Box(Modifier.fillMaxWidth().height(156.dp), contentAlignment = Alignment.Center) {
+            Canvas(Modifier.size(154.dp).semantics { contentDescription = "Distribution chart, ${money(total, currency)}" }
+                .pointerInput(pieces) {
+                    detectTapGestures { point ->
+                        val x = point.x - size.width / 2f
+                        val y = point.y - size.height / 2f
+                        val radius = hypot(x, y)
+                        if (radius > size.width * .27f && radius < size.width * .51f) {
+                            var fraction = ((Math.toDegrees(atan2(y, x).toDouble()) + 450) % 360 / 360)
+                            val index = weights.indexOfFirst { weight -> fraction -= weight; fraction <= 0 }
+                            selected = pieces.getOrNull(index)
+                        }
+                    }
+                }) {
+                val inset = 17.dp.toPx()
+                val ring = Size(size.width - 2 * inset, size.height - 2 * inset)
+                val top = Offset(inset, inset)
+                drawArc(ringTrack, -90f, 360f, false, top, ring, style = Stroke(22.dp.toPx()))
+                var angle = -90f
+                pieces.forEachIndexed { index, slice ->
+                    val sweep = weights[index] * 360
+                    val gap = if (pieces.size > 1) minOf(3f, sweep / 2) else 0f
+                    drawArc(Color(slice.color).copy(alpha = if (selected == null || selected == slice) 1f else .35f),
+                        angle + gap / 2, (sweep - gap) * progress, false, top, ring,
+                        style = Stroke((if (selected == slice) 30 else 23).dp.toPx()))
+                    angle += sweep
+                }
+            }
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(132.dp)) {
+                Text(selected?.name ?: tr(if (type == EntryType.EXPENSE) "Total expenses" else "Total income"),
+                    style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(money(selected?.amount ?: total, currency), style = MaterialTheme.typography.titleMedium, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis)
+            }
+        }
+        if (pieces.isEmpty()) {
+            Text(tr("Your recorded transactions will appear here."), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+        } else {
+            pieces.forEachIndexed { index, slice ->
+                Row(Modifier.fillMaxWidth().clickable { selected = if (selected == slice) null else slice }.padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                    CategoryMark(slice.icon, slice.color)
+                    Text(slice.name, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                    Text("${(weights[index] * 100).let { kotlin.math.round(it).toInt() }}%", style = MaterialTheme.typography.labelLarge)
+                }
+            }
+            selected?.let { slice ->
+                if (slice.id == "other") {
+                    groups.drop(5).forEach { group ->
+                        TextButton({ onDrill(type, group.id) }, Modifier.fillMaxWidth()) {
+                            Text(group.name, Modifier.weight(1f))
+                            Text(money(group.amount, currency))
+                        }
+                    }
+                } else TextButton({ onDrill(type, slice.id) }, Modifier.align(Alignment.End)) { Text(tr("View transactions")) }
+            }
+        }
+    }
+}
+
+@Composable
+fun EntryRow(entry: Entry, ledger: Ledger, onClick: (() -> Unit)? = null) {
+    val category = ledger.categories.find { it.id == entry.categoryId }
+    val account = ledger.accounts.find { it.id == entry.accountId }
+    val dest = ledger.accounts.find { it.id == entry.destinationId }
+    val payer = ledger.members.find { it.userId == entry.payer }?.name
+    val isTransfer = entry.type == EntryType.TRANSFER
+    val interaction = if (onClick == null) Modifier else Modifier.clickable(onClick = onClick)
+    Row(Modifier.fillMaxWidth().then(interaction).padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        CategoryMark(category?.icon ?: if (isTransfer) "transfer" else "more", category?.color ?: 0xFF719681)
+        Column(Modifier.weight(1f)) {
+            Text(category?.name ?: if (isTransfer) "Transfer" else "Uncategorized", fontWeight = FontWeight.SemiBold, maxLines = 1)
+            val subtitle = listOfNotNull(account?.name, dest?.name, payer, entry.note.takeIf { it.isNotBlank() }).joinToString(" · ")
+            Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Column(horizontalAlignment = Alignment.End) {
+            val sign = if (isTransfer) "" else if (entry.type == EntryType.INCOME) "+" else "−"
+            val tint = if (isTransfer) MaterialTheme.colorScheme.onSurface else if (entry.type == EntryType.INCOME)
+                MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+            Text(sign + money(entry.amount.decimal(), entry.currency), color = tint, style = MaterialTheme.typography.labelLarge)
+            Text(LocalDate.parse(entry.date).shortDate(), style = MaterialTheme.typography.labelSmall)
+            if (!isTransfer && (entry.budgetAmount == null || entry.accountAmount == null)) {
+                Text(tr("Conversion pending"), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
+            }
+        }
+    }
+}

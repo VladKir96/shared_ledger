@@ -1,0 +1,13 @@
+project_id = "sharedledger"
+
+[auth]
+enabled = true
+minimum_password_length = 8
+additional_redirect_urls = ["sharedledger://auth/recovery"]
+
+[auth.email]
+enable_signup = true
+enable_confirmations = true
+
+[functions.delete-account]
+verify_jwt = false

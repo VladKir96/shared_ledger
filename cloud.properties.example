@@ -1,0 +1,4 @@
+# Copy to cloud.properties to build a cloud-enabled APK.
+# Use the project's public publishable key, never a secret or service-role key.
+SUPABASE_URL=https://your-project-ref.supabase.co
+SUPABASE_PUBLISHABLE_KEY=sb_publishable_replace_me
