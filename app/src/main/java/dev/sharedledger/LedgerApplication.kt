@@ -31,7 +31,8 @@ class LedgerApplication : Application() {
 object LedgerModule {
     @Provides @Singleton
     fun database(@ApplicationContext context: Context): LedgerDatabase =
-        Room.databaseBuilder(context, LedgerDatabase::class.java, "sharedledger.db").addMigrations(LedgerDatabase.MIGRATION_1_2, LedgerDatabase.MIGRATION_2_3).build()
+        Room.databaseBuilder(context, LedgerDatabase::class.java, "sharedledger.db")
+            .addMigrations(LedgerDatabase.MIGRATION_1_2, LedgerDatabase.MIGRATION_2_3, LedgerDatabase.MIGRATION_3_4).build()
 
     @Provides
     fun dao(database: LedgerDatabase): LedgerDao = database.ledger()

@@ -83,8 +83,8 @@ class LedgerDataTest {
         val fresh = Room.inMemoryDatabaseBuilder(target, LedgerDatabase::class.java).build()
         try {
             val destination = Portability(LedgerRepository(fresh, Rates(fresh, emptyList())))
-            assertEquals(1 to 0, destination.apply(preview, null))
-            assertEquals(0 to 1, destination.apply(preview, null))
+            assertEquals(1 to 0, destination.restore(preview))
+            assertEquals(0 to 1, destination.restore(preview))
             assertEquals(cash.id, fresh.ledger().entries(budget.id).single().accountId)
             assertEquals(groceries.id, fresh.ledger().entries(budget.id).single().categoryId)
         } finally { fresh.close() }

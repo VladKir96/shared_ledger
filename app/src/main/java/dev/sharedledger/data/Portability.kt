@@ -19,7 +19,7 @@ data class BudgetArchive(
 data class CsvTable(val headers: List<String>, val rows: List<List<String>>)
 data class CsvMapping(val date: String, val amount: String, val type: String?, val currency: String?, val category: String?,
                       val account: String?, val note: String?, val id: String?)
-data class ImportPreview(val archive: Archive, val errors: List<String> = emptyList()) {
+data class ImportPreview(val archive: Archive, val errors: List<String> = emptyList(), val rejectedRows: Int = errors.size) {
     val count get() = archive.budgets.sumOf { it.entries.size }
 }
 
@@ -120,25 +120,28 @@ class Portability @Inject constructor(private val repo: LedgerRepository) {
         }
     }
 
-    suspend fun apply(preview: ImportPreview, destination: String?): Pair<Int, Int> = repo.db.withTransaction {
+    private val merge = ImportMerge(repo)
+
+    suspend fun reviewMerge(preview: ImportPreview, destination: ImportDestination): ImportReview =
+        merge.review(preview, destination)
+
+    suspend fun applyMerge(preview: ImportPreview, destination: ImportDestination, reviewed: ImportReview): ImportReview =
+        merge.apply(preview, destination, reviewed)
+
+    suspend fun restore(preview: ImportPreview): Pair<Int, Int> = repo.db.withTransaction {
         require(preview.archive.budgets.isNotEmpty())
-        require(destination == null || preview.archive.budgets.size == 1) { "Import multiple budgets as separate budgets." }
         var inserted = 0
         var duplicates = 0
         var activate: String? = null
         for (value in preview.archive.budgets) {
-            val budget = if (destination == null) {
-                val existing = dao.budget(value.budget.id)
-                if (existing != null && (existing.principal != null || existing.deletedAt != null)) {
-                    throw IllegalArgumentException("A protected or deleted budget has this identifier. Choose a local destination.")
-                }
-                existing ?: value.budget.copy(type = BudgetType.PERSONAL, principal = null, owner = null, role = Role.OWNER, deletedAt = null)
-                    .also { repo.store(it, it) }
-            } else repo.writable(destination, true).also {
-                require(it.principal == null) { "Import into a local budget. Enable cloud sync after reviewing the import." }
+            val existing = dao.budget(value.budget.id)
+            require(existing?.principal == null && existing?.deletedAt == null) {
+                "A protected or deleted budget has this identifier. Use Merge to choose a destination."
             }
+            val budget = existing ?: value.budget.copy(type = BudgetType.PERSONAL, principal = null, owner = null,
+                role = Role.OWNER, deletedAt = null).also { repo.store(it, it) }
             activate = budget.id
-            fun remap(recordId: String) = if (budget.id == value.budget.id) recordId else named("${budget.id}:$recordId")
+            fun remap(recordId: String) = recordId
             val accountMap = value.accounts.associate { it.id to remap(it.id) }
             val categoryMap = value.categories.associate { it.id to remap(it.id) }
             val ruleMap = value.rules.associate { it.id to remap(it.id) }
@@ -188,14 +191,7 @@ class Portability @Inject constructor(private val repo: LedgerRepository) {
                 }
             }
         }
-        preview.archive.rates.forEach { rate ->
-            if (dao.rate(rate.base, rate.target, rate.requestedDate) == null) {
-                dao.put(rate)
-                if (rate.source != MANUAL_RATE && LocalDate.parse(rate.date) >= LocalDate.parse(rate.requestedDate).minusDays(RATE_LOOKBACK)) {
-                    dao.put(RateCheck(rate.base, rate.target, rate.requestedDate, rate.date, rate.source, rate.fetchedAt))
-                }
-            }
-        }
+        repo.storeArchiveRates(preview.archive.rates)
         dao.put((dao.preferences() ?: Preferences()).copy(activeBudget = activate))
         inserted to duplicates
     }
@@ -215,6 +211,8 @@ class Portability @Inject constructor(private val repo: LedgerRepository) {
         val categories = linkedMapOf<Pair<String, EntryType>, Category>()
         val entries = linkedMapOf<String, Entry>()
         val errors = mutableListOf<String>()
+        var rejected = 0
+        val occurrences = mutableMapOf<String, Int>()
         val headerIndex = table.headers.withIndex().associate { it.value to it.index }
         table.rows.forEachIndexed { index, row ->
             fun get(column: String?): String = headerIndex[column]?.let { row.getOrNull(it) }?.trim().orEmpty()
@@ -226,7 +224,7 @@ class Portability @Inject constructor(private val repo: LedgerRepository) {
                 val typeValue = get(mapping.type).uppercase()
                 require(typeValue in listOf("", "INCOME", "EXPENSE")) { "Expected Income or Expense." }
                 val type = if (typeValue == "INCOME" || typeValue.isBlank() && raw.signum() > 0) EntryType.INCOME else EntryType.EXPENSE
-                val amount = raw.abs().forCurrency(code)
+                val amount = raw.abs()
                 require(amount.signum() > 0) { "Amount must be nonzero." }
                 val wallet = get(mapping.account).ifBlank { "Cash" }.cleanName()
                 val label = get(mapping.category).ifBlank { if (type == EntryType.INCOME) "Other Income" else "Other" }.cleanName()
@@ -235,8 +233,11 @@ class Portability @Inject constructor(private val repo: LedgerRepository) {
                 val account = accounts.getOrPut(wallet to code) { Account(named("${budget.id}:$wallet:$code"), budget.id, wallet, code) }
                 val category = categories.getOrPut(label to type) { Category(named("${budget.id}:$label:$type"), budget.id, label, type, "more", categoryColors.first()) }
                 val supplied = get(mapping.id)
-                val identifier = if (supplied.isNotEmpty()) named("${budget.id}:csv-id:$supplied") else
-                    named("${budget.id}:csv-row:${listOf(day, amount.storage(), code, type, wallet, label, note).joinToString("\u001f")}")
+                val identifier = if (supplied.isNotEmpty()) named("${budget.id}:csv-id:$supplied") else {
+                    val key = "${budget.id}:csv-row:${listOf(day, amount.storage(), code, type, wallet, label, note).joinToString("\u001f")}"
+                    val occurrence = occurrences.merge(key, 1, Int::plus) ?: 1
+                    named(if (occurrence == 1) key else "$key:occurrence:$occurrence")
+                }
                 require(identifier !in entries) { "Duplicate transaction." }
                 val dayText = day.toString()
                 entries[identifier] = Entry(identifier, budget.id, account.id, category.id, type, amount.storage(), code, code, currency, dayText,
@@ -245,11 +246,12 @@ class Portability @Inject constructor(private val repo: LedgerRepository) {
                     budgetRate = "1".takeIf { code == currency }, budgetRateDate = dayText.takeIf { code == currency },
                     budgetRateSource = "Same currency".takeIf { code == currency }, note = note)
             } catch (e: Exception) {
+                rejected++
                 if (errors.size < 200) errors += "Row ${index + 2} · ${e.message ?: "Invalid transaction."}"
             }
         }
         return ImportPreview(Archive(budgets = listOf(BudgetArchive(budget, accounts.values.toList(), categories.values.toList(),
-            entries.values.toList(), emptyList()))), errors)
+            entries.values.toList(), emptyList()))), errors, rejected)
     }
 
     private fun encodeCsv(value: Archive): String = buildString {
@@ -267,6 +269,17 @@ class Portability @Inject constructor(private val repo: LedgerRepository) {
     }
 
     private fun String.requireId() { require(runCatching { UUID.fromString(this).toString() == this }.getOrDefault(false)) }
+}
+
+internal suspend fun LedgerRepository.storeArchiveRates(values: List<Rate>) {
+    values.forEach { rate ->
+        if (dao.rate(rate.base, rate.target, rate.requestedDate) == null) {
+            dao.put(rate)
+            if (rate.source != MANUAL_RATE && LocalDate.parse(rate.date) >= LocalDate.parse(rate.requestedDate).minusDays(RATE_LOOKBACK)) {
+                dao.put(RateCheck(rate.base, rate.target, rate.requestedDate, rate.date, rate.source, rate.fetchedAt))
+            }
+        }
+    }
 }
 
 private fun named(value: String): String = UUID.nameUUIDFromBytes(value.toByteArray(Charsets.UTF_8)).toString()

@@ -16,6 +16,7 @@ import dev.sharedledger.sync.CloudAuth
 import dev.sharedledger.sync.CloudError
 import dev.sharedledger.sync.ConfirmationResult
 import dev.sharedledger.sync.EmailPurpose
+import dev.sharedledger.sync.JoinedBudget
 import dev.sharedledger.sync.SyncEngine
 import dev.sharedledger.sync.RateNetwork
 
@@ -32,6 +33,8 @@ class LedgerViewModel @Inject constructor(val repository: LedgerRepository, val 
     private val events = Channel<String>(Channel.BUFFERED)
     val messages = events.receiveAsFlow()
     val busy = MutableStateFlow(false)
+    private val joining = MutableStateFlow(false)
+    val joiningInvitation = joining.asStateFlow()
     private val callback = MutableStateFlow<AuthCallback?>(null)
     val authCallback = callback.asStateFlow()
     private var activeLink: AuthLink? = null
@@ -65,7 +68,31 @@ class LedgerViewModel @Inject constructor(val repository: LedgerRepository, val 
         repository.preferences { it.copy(activeBudget = id) }
     }
 
-    fun execute(success: String? = null, finished: (() -> Unit)? = null, action: suspend () -> Unit) {
+    fun acceptInvitation(input: String, failed: (String) -> Unit, finished: (downloaded: Boolean) -> Unit) {
+        var joined: JoinedBudget? = null
+        execute(failed = failed, finished = {
+            val result = checkNotNull(joined)
+            notice(when {
+                !result.downloaded -> "Membership confirmed. The shared budget will appear after synchronization."
+                result.alreadyMember -> "You are already a member of this budget."
+                else -> "Budget joined"
+            })
+            finished(result.downloaded)
+        }) {
+            joining.value = true
+            try {
+                joined = sync.join(input)
+                filters.value = Filters()
+            } finally {
+                joining.value = false
+            }
+        }
+    }
+
+    fun execute(
+        success: String? = null, finished: (() -> Unit)? = null, failed: ((String) -> Unit)? = null,
+        action: suspend () -> Unit
+    ) {
         viewModelScope.launch {
             if (busy.value) return@launch
             busy.value = true
@@ -76,10 +103,12 @@ class LedgerViewModel @Inject constructor(val repository: LedgerRepository, val 
             } catch (e: CancellationException) {
                 throw e
             } catch (e: IllegalArgumentException) {
-                events.send(e.message ?: "Check your selections and try again.")
+                val message = e.message ?: "Check your selections and try again."
+                if (failed == null) events.send(message) else failed(message)
             } catch (e: Exception) {
                 android.util.Log.w("SharedLedger", "Operation failed (${e.javaClass.simpleName})")
-                events.send("The change could not be saved. Please try again.")
+                val message = "The change could not be saved. Please try again."
+                if (failed == null) events.send(message) else failed(message)
             } finally {
                 busy.value = false
             }

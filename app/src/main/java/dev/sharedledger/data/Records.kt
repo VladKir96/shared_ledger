@@ -198,8 +198,14 @@ data class PendingChange(
     val baseVersion: Long,
     val remoteVersion: Long? = null,
     val remoteBody: String? = null,
-    @androidx.room.ColumnInfo(defaultValue = "0") val rateOnly: Boolean = false
+    @androidx.room.ColumnInfo(defaultValue = "0") val rateOnly: Boolean = false,
+    @androidx.room.ColumnInfo(defaultValue = "0") val imported: Boolean = false
 )
+
+@Entity(tableName = "import_links", primaryKeys = ["budgetId", "sourceBudgetId", "kind", "sourceId"], foreignKeys = [
+    ForeignKey(entity = Budget::class, parentColumns = ["id"], childColumns = ["budgetId"], onDelete = ForeignKey.CASCADE)
+])
+data class ImportLink(val budgetId: String, val sourceBudgetId: String, val kind: String, val sourceId: String, val targetId: String)
 
 @Entity(tableName = "remote_versions", primaryKeys = ["kind", "recordId"], indices = [Index("budgetId")])
 data class RemoteVersion(val kind: String, val recordId: String, val budgetId: String, val version: Long)

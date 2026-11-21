@@ -26,7 +26,7 @@ import dev.sharedledger.domain.*
 import java.math.BigDecimal
 
 @Composable
-fun SettingsScreen(state: LedgerState, vm: LedgerViewModel) {
+fun SettingsScreen(state: LedgerState, vm: LedgerViewModel, onBudgetJoined: () -> Unit) {
     var screen by rememberSaveable { mutableStateOf("") }
     BackHandler(screen.isNotEmpty()) { screen = "" }
     fun toggle(name: String) { screen = name }
@@ -41,7 +41,7 @@ fun SettingsScreen(state: LedgerState, vm: LedgerViewModel) {
                 "Accounts" -> Accounts(state, vm)
                 "Categories" -> Categories(state, vm)
                 "Appearance" -> Appearance(state, vm)
-                else -> AdvancedSettings(screen, state, vm)
+                else -> AdvancedSettings(screen, state, vm, onBudgetJoined)
             }
         }
     } else LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp, 14.dp, 20.dp, 22.dp),

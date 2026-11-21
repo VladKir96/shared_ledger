@@ -95,6 +95,10 @@ interface LedgerDao {
     suspend fun pending(): List<PendingChange>
     @Query("SELECT * FROM outbox")
     fun pendingFlow(): Flow<List<PendingChange>>
+    @Query("SELECT * FROM outbox WHERE budgetId = :budget AND imported")
+    fun pendingImports(budget: String): Flow<List<PendingChange>>
+    @Query("SELECT * FROM import_links WHERE budgetId = :budget AND sourceBudgetId = :source")
+    suspend fun importLinks(budget: String, source: String): List<ImportLink>
     @Query("SELECT * FROM outbox WHERE kind = :kind AND recordId = :record")
     suspend fun pending(kind: String, record: String): PendingChange?
     @Query("SELECT version FROM remote_versions WHERE kind = :kind AND recordId = :record")
@@ -123,18 +127,29 @@ interface LedgerDao {
     @Upsert suspend fun put(value: Preferences)
     @Upsert suspend fun put(value: PendingChange)
     @Upsert suspend fun put(value: RemoteVersion)
+    @Upsert suspend fun putImportLinks(values: List<ImportLink>)
 }
 
 @Database(
     entities = [Budget::class, Account::class, Category::class, Entry::class, Rule::class, Rate::class, Member::class,
-        Preferences::class, PendingChange::class, RemoteVersion::class, RateCheck::class, RateSyncRecord::class],
-    version = 3,
+        Preferences::class, PendingChange::class, RemoteVersion::class, RateCheck::class, RateSyncRecord::class, ImportLink::class],
+    version = 4,
     exportSchema = true
 )
 abstract class LedgerDatabase : RoomDatabase() {
     abstract fun ledger(): LedgerDao
 
     companion object {
+        val MIGRATION_3_4 = object : androidx.room.migration.Migration(3, 4) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE outbox ADD COLUMN imported INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("""CREATE TABLE IF NOT EXISTS import_links (
+                    budgetId TEXT NOT NULL, sourceBudgetId TEXT NOT NULL, kind TEXT NOT NULL, sourceId TEXT NOT NULL,
+                    targetId TEXT NOT NULL, PRIMARY KEY (budgetId, sourceBudgetId, kind, sourceId),
+                    FOREIGN KEY (budgetId) REFERENCES budgets (id) ON UPDATE NO ACTION ON DELETE CASCADE)""")
+            }
+        }
+
         val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) {
             override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_entries_budgetId_payer_date ON entries (budgetId, payer, date)")

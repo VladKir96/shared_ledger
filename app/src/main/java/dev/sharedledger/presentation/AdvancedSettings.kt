@@ -20,6 +20,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import dev.sharedledger.data.*
 import dev.sharedledger.domain.*
+import dev.sharedledger.sync.Background
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.time.LocalDate
 
 @Composable
@@ -36,9 +40,9 @@ fun PreferenceSettingsLinks(open: (String) -> Unit) {
 }
 
 @Composable
-fun AdvancedSettings(screen: String, state: LedgerState, vm: LedgerViewModel) {
+fun AdvancedSettings(screen: String, state: LedgerState, vm: LedgerViewModel, onBudgetJoined: () -> Unit) {
     when (screen) {
-        "Cloud sync" -> CloudSettings(state, vm)
+        "Cloud sync" -> CloudSettings(state, vm, onBudgetJoined)
         "Recurring transactions" -> RecurringSettings(state, vm)
         "Currencies", "Exchange rates" -> CurrencySettings(state, vm)
         "Import and export" -> PortabilitySettings(state, vm)
@@ -168,13 +172,10 @@ private fun PortabilitySettings(state: LedgerState, vm: LedgerViewModel) {
     var csv by rememberSaveable { mutableStateOf(false) }
     var limitRange by rememberSaveable { mutableStateOf(false) }
     var scope by rememberSaveable { mutableStateOf<String?>(state.budget?.id) }
-    var destination by rememberSaveable { mutableStateOf<String?>(null) }
     var preview by remember { mutableStateOf<ImportPreview?>(null) }
     var external by remember { mutableStateOf<CsvTable?>(null) }
-    var discard by remember { mutableStateOf(false) }
     var clearLocal by remember { mutableStateOf(false) }
     val currencies = state.budgets.associate { it.id to it.name }
-    val local = state.budgets.filter { it.principal == null }.associate { it.id to it.name }
     var exportPlan by remember { mutableStateOf<Triple<List<String>, DateSpan, Boolean>?>(null) }
     val exportJson = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         val plan = exportPlan
@@ -192,19 +193,74 @@ private fun PortabilitySettings(state: LedgerState, vm: LedgerViewModel) {
                 ?: throw IllegalArgumentException("Choose a writable destination.")
         }
     }
+    val session by vm.auth.session.collectAsState()
+    val online by remember(vm.rateNetwork) { vm.rateNetwork.observe() }.collectAsState(vm.rateNetwork.available())
+    val writable = state.budgets.filter { it.role != Role.VIEWER && (it.principal == null || it.principal == session?.userId) }
+    var destination by remember { mutableStateOf<ImportDestination?>(ImportDestination.NewPersonal) }
+    var isBackup by remember { mutableStateOf(false) }
+    var review by remember { mutableStateOf<ImportReview?>(null) }
+    var reviewVersion by remember { mutableIntStateOf(0) }
+    var completed by remember { mutableStateOf<ImportReview?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var confirming by remember { mutableStateOf(false) }
+    val busy by vm.busy.collectAsState()
+
+    fun showPreview(file: ImportPreview, backup: Boolean) {
+        preview = file
+        isBackup = backup
+        external = null
+        completed = null
+        error = null
+        review = null
+        destination = if (file.archive.budgets.size > 1) null
+            else writable.find { it.id == state.budget?.id }?.let { ImportDestination.Existing(it.id) } ?: ImportDestination.NewPersonal
+    }
+
     val read = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) vm.execute {
-            val bytes = resolver.openInputStream(uri)?.use { it.readNBytesCompat(24_000_001) }
-                ?: throw IllegalArgumentException("The file could not be opened.")
-            require(bytes.size <= 24_000_000) { "Choose a file smaller than 24 MB." }
-            val data = bytes.toString(Charsets.UTF_8).removePrefix("\uFEFF")
-            if (data.trimStart().startsWith("{")) {
-                preview = vm.portability.decodeJson(data)
-                external = null
-            } else {
-                external = vm.portability.parseCsv(data)
-                preview = null
+        if (uri != null) {
+            var decoded: ImportPreview? = null
+            var parsed: CsvTable? = null
+            vm.execute(failed = { error = it }, finished = {
+                val backup = decoded
+                if (backup != null) showPreview(backup, true) else {
+                    external = parsed
+                    preview = null
+                    completed = null
+                    error = null
+                }
+            }) {
+                val bytes = resolver.openInputStream(uri)?.use { it.readNBytesCompat(24_000_001) }
+                    ?: throw IllegalArgumentException("The file could not be opened.")
+                require(bytes.size <= 24_000_000) { "Choose a file smaller than 24 MB." }
+                val data = bytes.toString(Charsets.UTF_8).removePrefix("\uFEFF")
+                if (data.trimStart().startsWith("{")) decoded = vm.portability.decodeJson(data)
+                else parsed = vm.portability.parseCsv(data)
             }
+        }
+    }
+    val destinations = buildList {
+        if (preview?.archive?.budgets?.size == 1) {
+            writable.forEach { add(ImportDestination.Existing(it.id)) }
+            add(ImportDestination.NewPersonal)
+            if (online && vm.sync.configured) session?.let { add(ImportDestination.NewShared(it.userId)) }
+        }
+        if (isBackup) add(null)
+    }
+    val selected = destination
+    val permitted = selected in destinations
+    LaunchedEffect(preview, selected, permitted, reviewVersion) {
+        review = null
+        val file = preview ?: return@LaunchedEffect
+        if (selected == null || !permitted) return@LaunchedEffect
+        error = null
+        try {
+            review = withContext(Dispatchers.IO) { vm.portability.reviewMerge(file, selected) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IllegalArgumentException) {
+            error = e.message ?: "The destination could not be reviewed."
+        } catch (_: Exception) {
+            error = "The destination could not be reviewed. Choose the file again."
         }
     }
     LazyColumn(contentPadding = PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -224,14 +280,56 @@ private fun PortabilitySettings(state: LedgerState, vm: LedgerViewModel) {
         } }
         item { Panel(Modifier.fillMaxWidth()) {
             Text(tr("Import"), style = MaterialTheme.typography.titleLarge)
-            Button({ read.launch(arrayOf("application/json", "text/csv", "text/plain", "application/octet-stream")) }) { Text(tr("Choose a file")) }
-            preview?.let { result ->
-                Text("${result.count} valid transactions · ${result.archive.budgets.size} budget(s)")
-                result.errors.take(8).forEach { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-                if (result.errors.size > 8) Text("${result.errors.size - 8} more reported issues")
-                if (result.archive.budgets.size == 1) Select("Destination", destination, listOf(null) + local.keys,
-                    { local[it] ?: "Import as local budget" }, Modifier.fillMaxWidth()) { destination = it }
-                Button({ discard = true }, enabled = result.count > 0 || result.errors.isEmpty()) { Text(tr("Review and import")) }
+            Button({ read.launch(arrayOf("application/json", "text/csv", "text/plain", "application/octet-stream")) }, enabled = !busy) { Text(tr("Choose a file")) }
+            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            preview?.let { file ->
+                Select("Destination", selected, destinations, { option ->
+                    when (option) {
+                        is ImportDestination.Existing -> writable.find { it.id == option.budgetId }?.let { budget ->
+                            "${budget.name} · ${if (budget.type == BudgetType.SHARED) "Shared" else "Personal"}"
+                        } ?: "Budget unavailable"
+                        ImportDestination.NewPersonal -> "New personal budget"
+                        is ImportDestination.NewShared -> "New shared budget"
+                        null -> "Restore backup as local budgets"
+                    }
+                }, Modifier.fillMaxWidth()) { destination = it }
+                if (!permitted) Text("This destination is unavailable. Choose a writable budget, or connect to create a shared budget.")
+                if (file.archive.budgets.size == 1 && destinations.none { it is ImportDestination.NewShared })
+                    Text("Sign in and connect to create a new shared budget.")
+                if (selected != null && permitted && error != null)
+                    TextButton({ reviewVersion++ }, enabled = !busy) { Text("Refresh import preview") }
+                val prepared = review
+                if (prepared != null) {
+                    ImportSummary(prepared, completed = false)
+                    Text("Existing transactions, accounts, and categories will be preserved. Imported data will be merged into the selected budget.")
+                    if (prepared.budget.principal != null) Text("Cloud changes queue locally and sync when connected.")
+                } else if (selected == null) {
+                    Text("${file.count} transactions · ${file.archive.budgets.size} local budget(s)")
+                    Text("Restore the original backup structure as local budgets.")
+                } else if (permitted && error == null) {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+                Button({ confirming = true }, enabled = !busy && permitted &&
+                    (selected == null || prepared != null)) { Text(tr("Review and import")) }
+            }
+            completed?.let { result ->
+                Text("Import result", style = MaterialTheme.typography.titleMedium)
+                ImportSummary(result, completed = true)
+                if (result.budget.principal != null) {
+                    val pending by remember(result.budget.id) { vm.repository.dao.pendingImports(result.budget.id) }
+                        .collectAsState(initial = null)
+                    val status by vm.sync.status.collectAsState()
+                    val queue = pending
+                    val visible = state.budgets.any { it.id == result.budget.id }
+                    Text(when {
+                        !visible -> "Reconnect to the budget account to verify cloud sync."
+                        queue == null -> "Checking cloud sync…"
+                        queue.isEmpty() -> "Cloud import synchronized."
+                        queue.any { it.remoteVersion != null } -> "Cloud sync needs attention. Review conflicts under Cloud sync."
+                        else -> "${queue.size} imported changes pending cloud sync."
+                    })
+                    if (queue?.isNotEmpty() == true && status.text != "Up to date") Text(status.text)
+                } else Text("Saved to the local budget.")
             }
         } }
         item { TextButton({ clearLocal = true }) { Text(tr("Delete local data"), color = MaterialTheme.colorScheme.error) } }
@@ -240,16 +338,63 @@ private fun PortabilitySettings(state: LedgerState, vm: LedgerViewModel) {
         vm.execute("Local data deleted", { clearLocal = false }) { vm.repository.clearLocalData() }
     }
     external?.let { file -> CsvDialog(file, state.preferences.defaultCurrency, { external = null }) { mapping, name, currency ->
-        vm.execute(finished = { external = null }) { preview = vm.portability.decodeCsv(file, mapping, name, currency) }
+        var decoded: ImportPreview? = null
+        vm.execute(failed = { error = it }, finished = { showPreview(checkNotNull(decoded), false) }) {
+            decoded = vm.portability.decodeCsv(file, mapping, name, currency)
+        }
     } }
-    if (discard) Confirm("Import these records?", "Existing records are kept. Duplicate transactions are skipped.",
-        { discard = false }, "Import") {
-        val result = preview
-        discard = false
-        if (result != null) vm.execute(finished = { preview = null }) {
-            val chosen = destination.takeIf { result.archive.budgets.size == 1 }
-            val (inserted, skipped) = vm.portability.apply(result, chosen)
-            vm.notice("Imported $inserted transactions · $skipped duplicates skipped")
+    if (confirming) Confirm(if (selected == null) "Restore this backup?" else "Merge into ${review?.budget?.name.orEmpty()}?",
+        if (selected == null) "Restore this archive as local budgets." else
+            "Existing transactions, accounts, and categories will be preserved. Imported data will be merged into the selected budget.",
+        { confirming = false }, "Import") {
+        confirming = false
+        val file = preview
+        val checked = review
+        if (file != null && permitted) {
+            var result: ImportReview? = null
+            vm.execute(failed = { error = it }, finished = {
+                preview = null
+                completed = result
+                vm.filters.value = Filters()
+            }) {
+                if (selected == null) {
+                    val (inserted, skipped) = vm.portability.restore(file)
+                    vm.notice("Restored $inserted transactions · $skipped duplicates skipped")
+                } else if (checked != null) {
+                    if (selected is ImportDestination.NewShared) {
+                        require(vm.rateNetwork.available()) { "Connect to the internet to create a shared budget." }
+                        vm.sync.verifySharedCreation(selected.userId)
+                    }
+                    val imported = vm.portability.applyMerge(file, selected, checked)
+                    result = imported
+                    if (imported.budget.principal != null) Background.enqueueSync(context)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ImportSummary(review: ImportReview, completed: Boolean) {
+    Text(review.budget.name, style = MaterialTheme.typography.titleMedium)
+    Text(if (completed) "${review.transactions} transactions imported" else "${review.transactions} transactions to import")
+    Text("Accounts · ${review.accountsCreated} ${if (completed) "created" else "new"} · ${review.accountsReused} reused")
+    Text("Categories · ${review.categoriesCreated} ${if (completed) "created" else "new"} · ${review.categoriesReused} reused")
+    Text(if (completed) "${review.duplicates} duplicates skipped" else "${review.duplicates} duplicates to skip")
+    if (review.attention > 0) Text("${review.attention} records need attention and ${if (completed) "were skipped" else "will be skipped"}.")
+    var expanded by remember(review) { mutableStateOf(false) }
+    review.warnings.take(if (expanded) review.warnings.size else 4).forEach { warning ->
+        Text(warning, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+    }
+    if (review.warnings.size > 4) TextButton({ expanded = !expanded }) { Text(if (expanded) "Show fewer details" else "Show all details") }
+    if (!completed && (review.accounts.isNotEmpty() || review.categories.isNotEmpty())) {
+        var showMappings by remember(review) { mutableStateOf(false) }
+        TextButton({ showMappings = !showMappings }) { Text(if (showMappings) "Hide mappings" else "Review account and category mappings") }
+        if (showMappings) {
+            Text("Accounts", style = MaterialTheme.typography.labelLarge)
+            Text(review.accounts.joinToString("\n"), style = MaterialTheme.typography.bodySmall)
+            Text("Categories", style = MaterialTheme.typography.labelLarge)
+            Text(review.categories.joinToString("\n"), style = MaterialTheme.typography.bodySmall)
         }
     }
 }

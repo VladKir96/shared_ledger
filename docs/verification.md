@@ -7,10 +7,11 @@
 | Financial features | `Rates.kt`, `Recurring.kt`, `Reports.kt`, `Analytics.kt`, `Portability.kt` | Debug build and automated money, recurrence, migration and file round-trip tests |
 | Release preparation | Language resources, UI tests, Room schema exports, documentation and build configuration | Use the build/test commands in the README |
 
-For hosted setup instructions, see the [complete setup guide](setup-guide.md). To run the database tests, start a **disposable local Supabase stack** with `supabase start` and check that both repository migrations have been applied to it. Run the following from the repository root with a PostgreSQL client installed. This example uses the default local port and development credentials.
+For hosted setup instructions, see the [complete setup guide](setup-guide.md). To run the database tests, start a **disposable local Supabase stack** with `supabase start` and check that all repository migrations have been applied to it. Run the following from the repository root with a PostgreSQL client installed. This example uses the default local port and development credentials.
 
 ```sh
 psql 'postgresql://postgres:postgres@127.0.0.1:54322/postgres' -v ON_ERROR_STOP=1 -f supabase/tests/ledger.sql
+psql 'postgresql://postgres:postgres@127.0.0.1:54322/postgres' -v ON_ERROR_STOP=1 -f supabase/tests/invitations.sql
 ```
 
 The SQL uses fixed test identities inside a transaction and rolls back. It validates invitation redemption, direct RLS access, editor and viewer authorization, retries, conflict versions, and revocation. It does not require an Android client.
@@ -29,6 +30,16 @@ The debug build passed 18 JVM tests and 15 instrumented tests on an Android 15 e
 
 The signed APK embeds the project URL and public key from `cloud.properties`. Hosted email delivery and clicking a link from an actual inbox still need to be checked on the configured project. Complete the [hosted email walkthrough](setup-guide.md#supabase-email-authentication-and-android-deep-links) with a disposable account.
 
+## Shared budget invitation verification
+
+The debug build passed 24 JVM and 18 Android 15 emulator tests. The invitation scenarios covered the old Share-message format, usable and expired sessions, refresh, unconfirmed accounts, server-confirmed creation, and separate network, rate-limit, and permission failures. On the emulator, a successful response loaded accounts, categories, and transactions into Room and selected the budget. The interrupted-download test kept the membership, requested a background retry, and completed the local download without a second redemption.
+
+Both SQL suites and the HTTP integration test ran against the disposable local Supabase stack. The HTTP test created separate confirmed Auth accounts, signed in, refreshed the recipient's session, checked the saved invitation and active membership, and compared both snapshots after each account contributed transaction data. The opposing race requests accepted one user and rejected the other. The SQL tests also covered unconfirmed access, direct RLS checks, and retries after expiry or the attempt limit. The local HTTP test enabled auto-confirmation on its isolated instance. The SQL fixtures exercised the unconfirmed-user case separately. The hosted project accepted the public configuration for its Auth settings and reported that email auto-confirmation was off. The affected account, the two phones, and hosted invitation redemption still require the [two-device walkthrough](setup-guide.md#11-create-and-join-a-shared-budget).
+
+The migration and test environments leave existing hosted data intact. The migration is `202611210001_invitation_redemption.sql`. See [deployment steps](setup-guide.md#5-apply-and-verify-the-database-migrations).
+
+An upgrade fixture reproduced the legacy rejection of a pasted Share message and redeemed the same pre-migration code after applying the fix. A separate local smoke test used two authenticated WebSocket sessions and the publishable key. Both sessions received a budget-change event from the other user's expense, fetched matching snapshots, and calculated a total of 150 RSD.
+
 ## Deployed project acceptance
 
 Use two separate confirmed accounts on two Android devices connected to the same test project.
@@ -43,4 +54,4 @@ Use two separate confirmed accounts on two Android devices connected to the same
 
 A cloud-configured debug APK was also clean-built and signature-verified. The embedded public configuration matched the local properties file, and the configured Auth settings endpoint returned HTTP 200. That check validates gateway access. Complete the [two-device walkthrough](setup-guide.md#11-create-and-join-a-shared-budget) on your own project to verify sign-in, sync, and Realtime. Independently test hosted confirmation and recovery email delivery and the deployed Edge Function using disposable accounts.
 
-The optional hosted integration check uses two existing confirmed accounts in a disposable project. Set `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `LEDGER_TEST_OWNER_EMAIL`, `LEDGER_TEST_OWNER_PASSWORD`, `LEDGER_TEST_EDITOR_EMAIL`, and `LEDGER_TEST_EDITOR_PASSWORD` in the command environment. Then run `python3 scripts/verify_cloud.py`. It creates and soft-deletes test budgets and checks real sign-in, RPC behavior, matching snapshots, conflicts and revocation.
+The optional hosted integration check uses two existing confirmed accounts in a disposable project. Set `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `LEDGER_TEST_OWNER_EMAIL`, `LEDGER_TEST_OWNER_PASSWORD`, `LEDGER_TEST_EDITOR_EMAIL`, and `LEDGER_TEST_EDITOR_PASSWORD` in the command environment. Then run `python3 scripts/verify_cloud.py`. It creates and soft-deletes test budgets and checks real sign-in, session refresh, invitation and membership state, matching snapshots, conflicts, and revocation. To create disposable accounts automatically, run `python3 scripts/verify_cloud.py --local` against a separate loopback Supabase stack with email auto-confirmation enabled for that stack. Provide its local API URL as `SUPABASE_URL` and its local publishable or anon key as `SUPABASE_PUBLISHABLE_KEY`. The local test adds a third contender to exercise concurrent redemption.

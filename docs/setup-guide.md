@@ -179,8 +179,10 @@ A migration is a versioned SQL file that creates or updates the PostgreSQL schem
 | --- | --- |
 | [`202611200001_ledger.sql`](../supabase/migrations/202611200001_ledger.sql) | Ledger tables, indexes, constraints, signup profile trigger, Row Level Security, and publishing `public.budgets` to `supabase_realtime` if that publication exists |
 | [`202611200002_api.sql`](../supabase/migrations/202611200002_api.sql) | Database functions for budget snapshots and writes, version checks, invitations, and membership changes |
+| [`202611210001_invitation_redemption.sql`](../supabase/migrations/202611210001_invitation_redemption.sql) | Authenticated invitation creation and redemption, specific error codes, and receipts for safe retries |
+| [`202611210002_budget_import.sql`](../supabase/migrations/202611210002_budget_import.sql) | Create-only shared import batches for owners and editors |
 
-1. From the repository root, preview the hosted migration and inspect the `Target:` line. It must identify your linked test project. On a fresh project, the preview should list the two files above. A project with both already applied can report that there is nothing to push.
+1. From the repository root, preview the hosted migration and inspect the `Target:` line. It must identify your linked test project. On a fresh project, the preview should list all four files above. If you already deployed invitation redemption, the only pending file should be `202611210002_budget_import.sql`. A fully updated project can report that there is nothing to push.
 
    ```sh
    supabase db push --dry-run --remote
@@ -193,7 +195,7 @@ A migration is a versioned SQL file that creates or updates the PostgreSQL schem
    supabase migration list --remote
    ```
 
-3. Check that migration versions `202611200001` and `202611200002` appear in both the **Local** and **Remote** columns. In the Supabase Dashboard for that project, open **Table Editor**, select the **public** schema, and look for `profiles`, `budgets`, `budget_memberships`, `accounts`, `categories`, `transactions`, `recurring_rules`, `exchange_rate_cache`, and `invitations`. Empty tables are expected before users and budgets are created.
+3. Check that migration versions `202611200001`, `202611200002`, `202611210001`, and `202611210002` appear in both the **Local** and **Remote** columns. In the Supabase Dashboard for that project, open **Table Editor**, select the **public** schema, and look for `profiles`, `budgets`, `budget_memberships`, `accounts`, `categories`, `transactions`, `recurring_rules`, `exchange_rate_cache`, and `invitations`. Empty tables are expected before users and budgets are created.
 
 ### If the CLI tries to connect to `127.0.0.1:54322`
 
@@ -403,12 +405,12 @@ Use the **same cloud-enabled APK** on both phones, with separate email accounts 
 1. Open **Settings → Cloud sync** and tap **Create account**. Fill in **Display name**, **Email**, and **Password**, then tap **Create account** in the form. If confirmation is enabled, open the newest email link on that phone and tap **Continue** after **Email verified**. With confirmation off, signup may sign you in immediately. Successful sign-in shows your email and **Sync now**.
 2. Open **Settings → Budgets → Create budget**. Name it **Sync Test**, choose **Shared** under **Type**, set **Base currency** to **RSD**, leave **First account (optional)** set to **Cash**, and tap **Save**. On **Home**, check that **Sync Test** is selected in **Budget**, or use **Settings → Budgets → Switch** to select it.
 3. On **Home**, tap **Expense**, enter **100**, tap **Choose category**, select **Groceries**, and tap **Save expense**. Go to **Settings → Cloud sync**, tap **Sync now**, and check that the expense is no longer queued.
-4. In the **Sync Test members** section of **Cloud sync**, choose **Editor** under **Invite as** and tap **Generate invitation**. A Viewer can read records and cannot add an expense, so use Editor for this walkthrough. Tap **Share** and send the code or deep link to Device B. Each code is one-use and expires after 24 hours.
+4. In the **Sync Test members** section of **Cloud sync**, choose **Editor** under **Invite as** and tap **Generate invitation**. A Viewer can read records and cannot add an expense, so use Editor for this walkthrough. When **Invitation ready** appears, use **Copy code** or **Share** to send it to Device B. Supabase has saved the invitation at this point. Each code is one-use and expires after 24 hours.
 
 ### Device B — Join and write back
 
-1. Register and sign in as User B in **Settings → Cloud sync**. Under **Join a shared budget**, paste the **Invitation code or link** and tap **Join budget**. You can also open the invitation deep link while signed in. If the messaging app prevents opening custom links, paste the code.
-2. Select **Sync Test** in **Home → Budget** if needed. Open **Transactions** and verify that A's **100 RSD** expense appears. If it takes a moment, tap **Settings → Cloud sync → Sync now**. Check that the member role is **Editor** in **Cloud sync**.
+1. Complete email confirmation as User B and check that **Settings → Cloud sync** displays B's email. A user listed under **Authentication → Users** can still have an unconfirmed email or be signed out. Under **Join a shared budget**, paste the code, link, or full Share message and tap **Join budget**. You can also open the invitation link while signed in.
+2. The app opens **Sync Test** after downloading it. Open **Transactions** and verify that A's **100 RSD** expense appears. Check that B has the **Editor** role in **Cloud sync**. If the app reports that the membership was confirmed but the download is pending, reconnect and tap **Sync now**. The app can also complete the download through its scheduled retry.
 3. Record another **50 RSD** expense on Device B and tap **Sync now**. On Device A, verify that it appears in **Transactions**, using **Sync now** as needed. With the same date period and account filters, both **Home** screens should show **150 RSD** in expenses.
 
 ### Check offline queueing and recovery
@@ -427,6 +429,38 @@ Use the **same cloud-enabled APK** on both phones, with separate email accounts 
 | **N conflicts** | Open **Compare changes** and choose the appropriate version. Verify it on both devices after syncing. |
 
 To connect an existing local personal budget to your own account, select it and use **Settings → Cloud sync → Enable sync for this budget**. This uploads that personal budget for your signed-in devices. For an invitation-based shared budget, use **Type → Shared** when you create it.
+
+### Diagnose invitation failures
+
+| Outcome | What it means and how to check |
+| --- | --- |
+| `INVITATION_NOT_FOUND` | The code has the wrong format or Supabase has no matching invitation in this project. Verify both APKs use the same project URL. Paste the exact code, link, or full Share message. The older app could append the repeated code label to the token when pasting the full message. |
+| `INVITATION_EXPIRED` | The 24-hour window ended. Ask the owner for a fresh invitation. |
+| `INVITATION_ALREADY_USED` | The invitation has reached its use limit. If B already joined, check for B's membership before requesting another invitation. |
+| `INVITATION_REVOKED` | The owner deactivated this invitation. Ask the owner for a fresh invitation. |
+| `ALREADY_MEMBER` | The recipient already has active access. The app opens the existing budget after syncing. |
+| `AUTH_REQUIRED` | Sign in under **Cloud sync**. Check that the account email is visible before retrying. |
+| `EMAIL_NOT_CONFIRMED` | Open the confirmation email or request a new one from **Cloud sync**. |
+| `PERMISSION_DENIED` | Check the role and permissions. Only the owner of an active shared budget can create invitations. |
+| `BUDGET_NOT_SYNCED` | The app has no uploaded shared budget for this invitation. Create a **Shared** budget or complete its first synchronization. |
+| `NETWORK_ERROR` | Check connectivity and try again. If the first request created the membership, a retry opens it. |
+| `SERVER_ERROR` | Verify project configuration and that migration `202611210001` is applied. Check PostgREST and PostgreSQL logs. |
+| `RATE_LIMITED` | Wait for the corresponding window to reset. Supabase limits new attempts to 12 per user per 15 minutes and 20 invitations per budget per hour. A retry of an already recorded redemption can still open the active membership. |
+
+On Android, filter Logcat by `SharedLedgerInvite` or run `adb logcat -s SharedLedgerInvite:I`. It shows the RPC, session or refresh state, structured outcome, HTTP or RPC error code, and snapshot result. Do not paste tokens, passwords, or key values into logs or bug reports.
+
+In the Supabase Dashboard, open **Logs Explorer** and check **Auth** for sign-in or token refresh, **PostgREST** for `ledger_invite` and `ledger_redeem`, and **Postgres** for errors at the same time. An RPC can return HTTP 200 with a business outcome such as `INVITATION_EXPIRED`; use the app's outcome log to identify it. For synchronization without **Sync now**, check the **Realtime** logs and that `public.budgets` is in the `supabase_realtime` publication.
+
+To verify actual membership, get B's UUID from **Authentication → Users** and the budget UUID from **Table Editor → budgets**. Run the following read-only query in the Dashboard **SQL Editor**, after substituting both UUIDs.
+
+```sql
+select user_id, email_confirmed_at, m.role, m.active
+from public.budget_memberships m
+join auth.users u on u.id = m.user_id
+where m.budget_id = 'YOUR_BUDGET_UUID'::uuid and m.user_id = 'USER_B_UUID'::uuid;
+```
+
+Look for one active membership with the intended role and a confirmation timestamp. The timestamp verifies email confirmation. A separate sign-in or refresh check verifies the Android session. The owner can check the invitation's expiry, revocation, and use count in **Cloud sync** or **Table Editor → invitations**. The database stores the code as a hash.
 
 ## 12. Update the app or backend
 
@@ -450,9 +484,9 @@ To connect an existing local personal budget to your own account, select it and 
 | Login errors or signup unavailable | Check **Authentication → Sign In / Providers**, email/password signup, and the project's Auth logs. Make sure the user belongs to this project, has a valid password, and is confirmed if required. | The test user is listed under **Authentication → Users** and the app shows the account email after sign-in. |
 | No confirmation email, rate limit, or browser shows localhost | Check spam, allowed recipients, rate limits, SMTP delivery logs, and the Site URL and redirect allowlist. Review the confirmation template and request a fresh email when eligible. | **Email verified** appears in the app and the Dashboard lists the account as confirmed. |
 | An email link is invalid, expired, or already used | Verify both redirect entries in **Authentication → URL Configuration**. Check whether the account is already confirmed. Use **Resend confirmation email** or **Reset password** and open the newest email on the installation that requested it. See the scanner guidance if fresh links repeatedly expire. | The app shows **Email verified** or lets you update the password and sign in again. |
-| Invite invalid, expired, used, or revoked | Check that both phones use the same backend and separate signed-in accounts. A shared budget owner can generate a fresh invitation. Copy the full link or code and redeem it within 24 hours. | **Join budget** succeeds and the recipient appears under the budget's members. |
+| Invite invalid, expired, used, or revoked | Check the [invitation outcome and logs](#diagnose-invitation-failures). Verify the app versions, project, email confirmation, and signed-in accounts. | **Join budget** succeeds and the recipient appears under the budget's members. |
 | Manual sync works but changes arrive late | Check that `public.budgets` belongs to `supabase_realtime`, inspect Realtime logs, and test a network that allows WebSockets. Android can defer background work. | Keep the receiving phone online and open. Save a test change on the other phone and check whether it arrives without **Sync now**. |
-| Permission denied, RLS error, or a member cannot make changes | Confirm both migrations ran and the signed-in user has an active membership for the selected budget. Use **Editor** or **Owner** for transaction changes and the **Owner** account for managing members and invitations. Keep RLS enabled. | Check the member role in **Cloud sync** and retry a permitted action. |
+| Permission denied, RLS error, or a member cannot make changes | Confirm all migrations ran and the signed-in user has an active membership for the selected budget. Use **Editor** or **Owner** for transaction changes and the **Owner** account for managing members and invitations. Keep RLS enabled. | Check the member role in **Cloud sync** and retry a permitted action. |
 | Edge Function deploy fails or **Delete account** fails | Check CLI login, the linked project, deployment permissions, and `supabase functions deploy --help`. Deploy the repository's function with `--use-api` and check its logs. The function needs the hosted Supabase URL and legacy service-role runtime variable, plus a valid caller session. | `delete-account` appears in **Edge Functions**. Check account deletion only with disposable data. |
 | `adb devices` is empty, `unauthorized`, or `offline` | Unlock the phone, confirm USB debugging, approve the connection dialog, and try a data cable or another USB port. Use the manufacturer's Windows USB driver or Linux device permissions if your OS requires them. | `adb devices` lists the intended serial with state `device`. |
 | `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, `INSTALL_FAILED_VERSION_DOWNGRADE`, or `INSTALL_FAILED_OLDER_SDK` | Use an APK signed with the installed app's key and an appropriate version. The phone needs Android 8.0 or later. Export data before replacing an incompatible existing build. For installer restrictions, use a device where app installation is allowed. | ADB reports `Success` or the package installer completes, and the app opens. |

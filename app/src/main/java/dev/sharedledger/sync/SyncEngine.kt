@@ -1,7 +1,11 @@
 package dev.sharedledger.sync
 
+import android.content.Context
+import android.util.Log
 import androidx.room.withTransaction
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.sharedledger.data.*
+import dev.sharedledger.domain.BudgetType
 import dev.sharedledger.domain.Role
 import dev.sharedledger.domain.id
 import kotlinx.coroutines.CancellationException
@@ -28,11 +32,18 @@ private data class Snapshot(val seq: Long, val records: List<RemoteRecord>, val 
 data class Invitation(val id: String, val role: Role, val expires: String, val used: Int, val revoked: Boolean)
 
 @Singleton
-class SyncEngine @Inject constructor(private val api: CloudApi, private val auth: CloudAuth, private val repo: LedgerRepository) {
+class SyncEngine internal constructor(
+    private val api: CloudApi, private val auth: CloudAuth, private val repo: LedgerRepository,
+    private val requestSync: () -> Unit
+) {
+    @Inject constructor(api: CloudApi, auth: CloudAuth, repo: LedgerRepository, @ApplicationContext context: Context) :
+        this(api, auth, repo, { Background.enqueueSync(context) })
+
     private val lock = Mutex()
     private val dao get() = repo.dao
     val status = MutableStateFlow(SyncStatus())
     val configured get() = api.configured
+    private val invitationService = InvitationService(auth, api::rpc) { Log.i("SharedLedgerInvite", it) }
 
     suspend fun synchronize(): Boolean = lock.withLock {
         if (!configured) return true
@@ -46,15 +57,36 @@ class SyncEngine @Inject constructor(private val api: CloudApi, private val auth
             var warning = pull(session, keepLocalCreations = true)
             var issue: CloudError? = null
             val rejected = mutableSetOf<String>()
-            for (change in dao.pending().filter { it.remoteVersion == null }) {
-                if (change.budgetId in rejected || dao.budget(change.budgetId)?.principal != session.userId || repo.principal.value != session.userId) continue
+            val pending = dao.pending()
+            val blocked = pending.filter { it.imported && it.remoteVersion != null && it.kind != "entry" }
+                .mapTo(hashSetOf()) { it.budgetId }
+            if (blocked.isNotEmpty()) warning = "Resolve imported account, category, or rule conflicts to resume that import."
+            val queue = pending.filter { it.remoteVersion == null }
+            var index = 0
+            while (index < queue.size) {
+                val change = queue[index++]
+                if (change.budgetId in rejected || change.imported && change.budgetId in blocked ||
+                    dao.budget(change.budgetId)?.principal != session.userId || repo.principal.value != session.userId) continue
                 try {
-                    val value = api.rpc("ledger_apply", session.access, buildJsonObject {
-                        put("p_kind", change.kind); put("p_budget", change.budgetId); put("p_id", change.recordId)
-                        put("p_base", change.baseVersion); put("p_operation", change.operationId)
-                        put("p_body", ledgerJson.parseToJsonElement(change.body))
-                    }).jsonObject
-                    applyPush(session, change, value)
+                    if (change.isImportCreation()) {
+                        val batch = buildList {
+                            add(change)
+                            while (size < 50 && index < queue.size) {
+                                val next = queue[index]
+                                if (next.budgetId != change.budgetId || !next.isImportCreation()) break
+                                add(next)
+                                index++
+                            }
+                        }
+                        if (!pushImport(session, batch)) rejected.add(change.budgetId)
+                    } else {
+                        val value = api.rpc("ledger_apply", session.access, buildJsonObject {
+                            put("p_kind", change.kind); put("p_budget", change.budgetId); put("p_id", change.recordId)
+                            put("p_base", change.baseVersion); put("p_operation", change.operationId)
+                            put("p_body", ledgerJson.parseToJsonElement(change.body))
+                        }).jsonObject
+                        applyPush(session, change, value)
+                    }
                 } catch (e: CloudError) {
                     if (e.status == 401 || e.status == 0 || e.status >= 500 || e.status == 429) throw e
                     issue = e
@@ -76,6 +108,36 @@ class SyncEngine @Inject constructor(private val api: CloudApi, private val auth
             status.value = status.value.copy(running = false, text = "Sync interrupted. Local changes are queued.")
             false
         }
+    }
+
+    suspend fun verifySharedCreation(userId: String) {
+        require(configured) { "Configure cloud sync before creating a shared budget." }
+        val session = requireNotNull(auth.current(expectedUserId = userId)) { "Sign in before creating a shared budget." }
+        api.rpc("ledger_manifest", session.access)
+    }
+
+    private fun PendingChange.isImportCreation() = imported && baseVersion == 0L && kind != "budget"
+
+    private suspend fun pushImport(session: Session, batch: List<PendingChange>): Boolean {
+        val result = api.rpc("ledger_import_batch", session.access, buildJsonObject {
+            put("p_budget", batch.first().budgetId)
+            put("p_changes", buildJsonArray {
+                for (change in batch) add(buildJsonObject {
+                    put("kind", change.kind)
+                    put("id", change.recordId)
+                    put("operation", change.operationId)
+                    put("body", ledgerJson.parseToJsonElement(change.body))
+                })
+            })
+        }).jsonArray
+        check(result.isNotEmpty() && result.size <= batch.size)
+        val replies = result.map { it.jsonObject }
+        check(replies.dropLast(1).all { it.string("status") == "ok" } &&
+            (replies.last().string("status") == "conflict" || replies.size == batch.size && replies.last().string("status") == "ok"))
+        repo.db.withTransaction {
+            replies.forEachIndexed { i, reply -> applyPush(session, batch[i], reply) }
+        }
+        return replies.last().string("status") == "ok"
     }
 
     private suspend fun applyPush(session: Session, sent: PendingChange, result: JsonObject) = repo.db.withTransaction {
@@ -119,12 +181,18 @@ class SyncEngine @Inject constructor(private val api: CloudApi, private val auth
         }
         for (key in manifest) {
             if (repo.principal.value != session.userId) break
-            if (dao.version("snapshot", key.id) == key.seq && dao.budget(key.id)?.role == key.role) continue
+            val cached = dao.budget(key.id)
+            if (cached?.principal == session.userId && cached.role == key.role && dao.version("snapshot", key.id) == key.seq) continue
             val value = api.rpc("ledger_snapshot", session.access, buildJsonObject { put("p_budget", key.id) })
             if (value == JsonNull) continue
             val snapshot: Snapshot = ledgerJson.decodeFromJsonElement(value)
             repo.db.withTransaction {
                 if (repo.principal.value != session.userId) return@withTransaction
+                val previous = dao.budget(key.id)
+                if (previous?.principal != null && previous.principal != session.userId && dao.pending().any { it.budgetId == key.id }) {
+                    warning = "Sign in as the previous account to synchronize this budget's queued changes."
+                    return@withTransaction
+                }
                 val role = snapshot.members.find { it.userId == session.userId && it.active }?.role ?: return@withTransaction
                 for (remote in snapshot.records) {
                     val recordId = remote.body.string("id") ?: error("Missing id")
@@ -190,9 +258,16 @@ class SyncEngine @Inject constructor(private val api: CloudApi, private val auth
         }
     }
 
-    suspend fun invite(budget: String, role: Role): String = rpc("ledger_invite", buildJsonObject {
-        put("p_budget", budget); put("p_role", role.name)
-    }).jsonObject.string("token") ?: error("Missing invitation")
+    suspend fun invite(budget: String, role: Role): String = invitationService.create(budget, role) { session ->
+        val local = dao.budget(budget)
+        if (local == null || local.principal == null) throw InvitationFailure(InvitationError.BUDGET_NOT_SYNCED)
+        if (local.principal != session.userId || local.type != BudgetType.SHARED || local.deletedAt != null ||
+            local.role != Role.OWNER || role == Role.OWNER) throw InvitationFailure(InvitationError.PERMISSION_DENIED)
+        if (dao.version("budget", budget) == null) {
+            synchronize()
+            if (dao.version("budget", budget) == null) throw InvitationFailure(InvitationError.BUDGET_NOT_SYNCED)
+        }
+    }
 
     suspend fun invitations(budget: String): List<Invitation> = ledgerJson.decodeFromJsonElement(
         rpc("ledger_invitations", buildJsonObject { put("p_budget", budget) })
@@ -207,14 +282,28 @@ class SyncEngine @Inject constructor(private val api: CloudApi, private val auth
         synchronize()
     }
 
-    suspend fun join(code: String): String {
-        val token = code.trim().substringAfterLast('/').lowercase()
-        val result = rpc("ledger_redeem", buildJsonObject { put("p_token", token) }).jsonObject
-        result.string("error")?.let { throw CloudError(400, it) }
-        val budget = result.string("budgetId") ?: error("Missing budget")
-        synchronize()
-        repo.preferences { it.copy(activeBudget = budget) }
-        return budget
+    suspend fun join(input: String): JoinedBudget {
+        val membership = invitationService.redeem(input)
+        val downloaded = try {
+            synchronize()
+            repo.db.withTransaction {
+                if (repo.principal.value != membership.userId) return@withTransaction false
+                val budget = dao.budget(membership.budgetId)
+                val ready = budget?.principal == membership.userId && budget.deletedAt == null &&
+                    dao.version("snapshot", membership.budgetId) != null
+                // Keep the requested selection so the next successful pull opens the budget.
+                repo.preferences { it.copy(activeBudget = membership.budgetId) }
+                ready
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("SharedLedgerInvite", "rpc=ledger_snapshot outcome=LOCAL_ERROR category=${e.javaClass.simpleName}")
+            false
+        }
+        Log.i("SharedLedgerInvite", "rpc=ledger_snapshot outcome=${if (downloaded) "READY" else "SYNC_PENDING"}")
+        if (!downloaded) requestSync()
+        return JoinedBudget(membership.alreadyMember, downloaded)
     }
 
     private suspend fun rpc(name: String, body: JsonObject): JsonElement {

@@ -245,7 +245,7 @@ class LedgerRepository @Inject constructor(val db: LedgerDatabase, private val r
         return budget
     }
 
-    internal suspend fun store(budget: Budget, value: LedgerRecord, rateOnly: Boolean = false) {
+    internal suspend fun store(budget: Budget, value: LedgerRecord, rateOnly: Boolean = false, imported: Boolean = false) {
         val (kind, body) = when (value) {
             is Budget -> { dao.put(value); "budget" to ledgerJson.encodeToString(value) }
             is Account -> { dao.put(value); "account" to ledgerJson.encodeToString(value) }
@@ -256,9 +256,11 @@ class LedgerRepository @Inject constructor(val db: LedgerDatabase, private val r
         }
         if (budget.principal != null) {
             val pending = dao.pending(kind, value.id)
-            dao.put(PendingChange(kind, value.id, budget.id, id(), body,
+            val operation = if (imported) importOperation(kind, body) else id()
+            dao.put(PendingChange(kind, value.id, budget.id, operation, body,
                 pending?.baseVersion ?: dao.version(kind, value.id) ?: 0,
-                pending?.remoteVersion, pending?.remoteBody, rateOnly && pending?.rateOnly != false))
+                pending?.remoteVersion, pending?.remoteBody, rateOnly && pending?.rateOnly != false,
+                imported || pending?.imported == true))
         }
     }
 }

@@ -45,9 +45,10 @@ interface AuthVault {
 }
 
 @Singleton
-class CloudApi @Inject constructor(val client: OkHttpClient) : AuthTransport {
-    val url = BuildConfig.SUPABASE_URL.trimEnd('/')
-    val key = BuildConfig.SUPABASE_PUBLISHABLE_KEY
+class CloudApi internal constructor(val client: OkHttpClient, projectUrl: String, val key: String) : AuthTransport {
+    @Inject constructor(client: OkHttpClient) : this(client, BuildConfig.SUPABASE_URL, BuildConfig.SUPABASE_PUBLISHABLE_KEY)
+
+    val url = projectUrl.trimEnd('/')
     val configured = url.startsWith("https://") && key.isNotBlank()
     val realtimeUrl get() = url.replaceFirst("https://", "wss://") + "/realtime/v1/websocket?apikey=$key&vsn=1.0.0"
 
@@ -68,7 +69,7 @@ class CloudApi @Inject constructor(val client: OkHttpClient) : AuthTransport {
                             (objectBody?.get(field) as? JsonPrimitive)?.contentOrNull?.take(180)
                         }
                         val code = (objectBody?.string("error_code") ?: objectBody?.string("code"))
-                            ?.takeIf { it.matches(Regex("[a-z][a-z0-9_]{0,63}")) }
+                            ?.takeIf { it.matches(Regex("[a-z][a-z0-9_]{0,63}|PGRST[A-Z0-9]{3}|[A-Z0-9]{5}")) }
                         throw CloudError(response.code, message ?: "The server returned HTTP ${response.code}.",
                             code, response.header("Retry-After")?.toLongOrNull())
                     }

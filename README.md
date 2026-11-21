@@ -60,6 +60,24 @@ Register a disposable account from **Settings → Cloud sync → Create account*
 
 An existing unconfirmed account can use **Resend confirmation email** from the Cloud sync sign-in form after entering its email. An `otp_expired` response can indicate a past expiry, a previously used or superseded link, or a mail scanner that opened the link first. Check whether the account is already confirmed and try signing in. If needed, request a fresh link and open the newest email on the requesting device. See the setup guide for invalid links, optional scanner protection, and verified HTTPS Android App Links. [Detailed email configuration and testing](docs/setup-guide.md#supabase-email-authentication-and-android-deep-links)
 
+## Shared budget invitations
+
+Create a **Shared** budget and let it sync. In **Settings → Cloud sync**, the owner chooses **Editor** or **Viewer** and taps **Generate invitation**. The app shows the code after Supabase saves the invitation. A recipient with a confirmed email and an active session on the same Supabase project can paste the raw code, link, or full Share message under **Join a shared budget**. One-use codes expire after 24 hours. If the budget download is interrupted after joining, **Sync now** resumes it without another code.
+
+For an existing linked project, preview and apply the invitation migration before testing the new flow.
+
+```sh
+supabase db push --dry-run --remote
+supabase db push --remote
+supabase migration list --remote
+```
+
+Look for version `202611210001`. Existing unexpired, unused invitation codes still work. See the setup guide for error codes, diagnostics, and the two-device test. [Create and join a shared budget](docs/setup-guide.md#11-create-and-join-a-shared-budget) · [Verify invitation failures](docs/setup-guide.md#diagnose-invitation-failures)
+
+## Import into a personal or shared budget
+
+Use **Settings → Import and export** to merge JSON or CSV into a writable budget. The preview shows reused and new accounts and categories, and keeps the destination's existing history. Shared owners and editors can merge; viewers stay read-only. Deploy Supabase migration `202611210002` before syncing cloud imports. Use **Restore backup as local budgets** to recover the original archive structure. [Import and restore guide](docs/files.md)
+
 ## Build artifacts and tests
 
 | Build | Command from the repository root | Output |

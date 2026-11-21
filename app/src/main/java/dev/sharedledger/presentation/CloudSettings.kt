@@ -1,5 +1,7 @@
 package dev.sharedledger.presentation
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -22,9 +24,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 @Composable
-fun CloudSettings(state: LedgerState, vm: LedgerViewModel) {
+fun CloudSettings(state: LedgerState, vm: LedgerViewModel, onBudgetJoined: () -> Unit) {
     val session by vm.auth.session.collectAsState()
     val busy by vm.busy.collectAsState()
+    val joining by vm.joiningInvitation.collectAsState()
     val status by vm.sync.status.collectAsState()
     val changes by vm.repository.dao.pendingFlow().collectAsState(initial = emptyList())
     val scopedChanges = changes.filter { change -> state.budgets.any { it.id == change.budgetId && it.principal == session?.userId } }
@@ -38,8 +41,9 @@ fun CloudSettings(state: LedgerState, vm: LedgerViewModel) {
     var password by remember { mutableStateOf("") }
     var name by rememberSaveable { mutableStateOf("") }
     var joinCode by remember { mutableStateOf("") }
+    var joinError by remember { mutableStateOf<String?>(null) }
     var inviteRole by rememberSaveable { mutableStateOf(Role.EDITOR) }
-    var token by remember { mutableStateOf<String?>(null) }
+    var token by remember(budget?.id, session?.userId) { mutableStateOf<String?>(null) }
     var deleting by remember { mutableStateOf(false) }
     var promoting by remember { mutableStateOf(false) }
     var switching by remember { mutableStateOf(false) }
@@ -47,7 +51,7 @@ fun CloudSettings(state: LedgerState, vm: LedgerViewModel) {
     var conflict by remember { mutableStateOf<PendingChange?>(null) }
     var invitations by remember(budget?.id) { mutableStateOf(emptyList<Invitation>()) }
     val ownerShared = budget != null && budget.principal == session?.userId && budget.type == BudgetType.SHARED && budget.role == Role.OWNER
-    LaunchedEffect(budget?.id, ownerShared, status.lastSync) {
+    LaunchedEffect(budget?.id, ownerShared, status.lastSync, token) {
         if (ownerShared) {
             try { invitations = withContext(Dispatchers.IO) { vm.sync.invitations(budget!!.id) } }
             catch (_: dev.sharedledger.sync.CloudError) { }
@@ -123,9 +127,17 @@ fun CloudSettings(state: LedgerState, vm: LedgerViewModel) {
             item {
                 Panel(Modifier.fillMaxWidth()) {
                     Text(tr("Join a shared budget"), style = MaterialTheme.typography.titleMedium)
-                    Field(tr("Invitation code or link"), joinCode, { joinCode = it })
-                    Button({ vm.execute("Budget joined", { joinCode = "" }) { vm.sync.join(joinCode) } }, enabled = joinCode.isNotBlank()) {
-                        Text(tr("Join budget"))
+                    OutlinedTextField(joinCode, { joinCode = it; joinError = null }, label = { Text(tr("Invitation code or link")) },
+                        modifier = Modifier.fillMaxWidth(), maxLines = 3, enabled = !joining, isError = joinError != null,
+                        supportingText = joinError?.let { message -> { Text(tr(message)) } })
+                    Button({
+                        joinError = null
+                        vm.acceptInvitation(joinCode, { joinError = it }) { downloaded ->
+                            joinCode = ""
+                            if (downloaded) onBudgetJoined()
+                        }
+                    }, enabled = !busy && joinCode.isNotBlank()) {
+                        JoinButtonLabel(joining)
                     }
                 }
             }
@@ -146,12 +158,11 @@ fun CloudSettings(state: LedgerState, vm: LedgerViewModel) {
                     if (ownerShared) {
                         Select("Invite as", inviteRole, listOf(Role.EDITOR, Role.VIEWER), { it.label() }, Modifier.fillMaxWidth()) { inviteRole = it }
                         Button({
-                            vm.execute {
-                                vm.sync.synchronize()
-                                token = vm.sync.invite(budget.id, inviteRole)
-                                invitations = vm.sync.invitations(budget.id)
+                            var generated: String? = null
+                            vm.execute(finished = { token = generated }) {
+                                generated = vm.sync.invite(budget.id, inviteRole)
                             }
-                        }) { Text(tr("Generate invitation")) }
+                        }, enabled = !busy) { Text(tr("Generate invitation")) }
                         invitations.forEach { invitation ->
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text("${invitation.role.label()} · ${invitation.expires.take(10)}" +
@@ -182,11 +193,20 @@ fun CloudSettings(state: LedgerState, vm: LedgerViewModel) {
         }, confirmButton = {
             TextButton({
                 val share = Intent(Intent.ACTION_SEND).setType("text/plain")
-                    .putExtra(Intent.EXTRA_TEXT, "Join my SharedLedger budget\nsharedledger://invite/$code\nInvitation code: $code")
+                    .putExtra(Intent.EXTRA_TEXT, "Join my SharedLedger budget\nsharedledger://invite/$code")
                 context.startActivity(Intent.createChooser(share, "Share invitation"))
                 token = null
             }) { Text(tr("Share")) }
-        }, dismissButton = { TextButton({ token = null }) { Text(tr("Close")) } })
+        }, dismissButton = {
+            Row {
+                TextButton({
+                    context.getSystemService(ClipboardManager::class.java)
+                        .setPrimaryClip(ClipData.newPlainText("SharedLedger invitation", code))
+                    vm.notice("Invitation code copied")
+                }) { Text(tr("Copy code")) }
+                TextButton({ token = null }) { Text(tr("Close")) }
+            }
+        })
     }
     if (switching) Confirm("Sign out?", "Synced budgets will be hidden until you sign in again.", { switching = false }, "Sign out") {
         switching = false
@@ -239,17 +259,40 @@ private fun changeSummary(body: String): String {
 }
 
 @Composable
-fun IncomingInvitation(uri: android.net.Uri?, vm: LedgerViewModel, clear: () -> Unit) {
-    if (uri == null || uri.scheme != "sharedledger") return
+fun IncomingInvitation(uri: android.net.Uri?, vm: LedgerViewModel, clear: () -> Unit, openCloud: () -> Unit, onBudgetJoined: () -> Unit) {
+    if (uri?.scheme != "sharedledger" || uri.host != "invite") return
     val session by vm.auth.session.collectAsState()
-    if (uri.host == "invite") {
-        val code = uri.lastPathSegment ?: return
-        AlertDialog(onDismissRequest = clear, title = { Text("Join a shared budget?") },
-            text = { Text(if (session == null) "Sign in under Settings → Cloud sync, then open the invitation again." else "The invitation will add this budget to your account.") },
-            confirmButton = {
-                TextButton({
-                    if (session != null) vm.execute("Budget joined", clear) { vm.sync.join(code) } else clear()
-                }) { Text(if (session == null) "Close" else "Join budget") }
-            }, dismissButton = { TextButton(clear) { Text(tr("Cancel")) } })
+    val busy by vm.busy.collectAsState()
+    val joining by vm.joiningInvitation.collectAsState()
+    var error by remember(uri) { mutableStateOf<String?>(null) }
+    AlertDialog(onDismissRequest = { if (!joining) clear() }, title = { Text(tr("Join a shared budget?")) },
+        text = {
+            val message = error
+            Text(tr(message ?: if (session == null) "Please sign in before accepting an invitation."
+                else "The invitation will add this budget to your account."),
+                color = if (message != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+        },
+        confirmButton = {
+            TextButton({
+                if (session == null) { clear(); openCloud() }
+                else {
+                    error = null
+                    vm.acceptInvitation(uri.toString(), { error = it }) { downloaded ->
+                        clear()
+                        if (downloaded) onBudgetJoined() else openCloud()
+                    }
+                }
+            }, enabled = !busy) {
+                if (session == null) Text(tr("Sign in")) else JoinButtonLabel(joining)
+            }
+        }, dismissButton = { TextButton(clear, enabled = !joining) { Text(tr("Cancel")) } })
+}
+
+@Composable
+private fun JoinButtonLabel(joining: Boolean) {
+    if (joining) {
+        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+        Spacer(Modifier.width(8.dp))
     }
+    Text(tr(if (joining) "Validating invitation…" else "Join budget"))
 }

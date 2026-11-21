@@ -43,6 +43,7 @@ fun LedgerApp(vm: LedgerViewModel, link: android.net.Uri? = null, clearLink: () 
         launchSingleTop = true
         restoreState = true
     }
+    fun openCloud() { nav.navigate("cloud-auth") { launchSingleTop = true } }
     LaunchedEffect(vm) { vm.messages.collect { snackbar.showSnackbar(it, duration = SnackbarDuration.Short) } }
     LedgerTheme(state.preferences.theme, state.preferences.dynamicColor) {
         Scaffold(
@@ -94,14 +95,14 @@ fun LedgerApp(vm: LedgerViewModel, link: android.net.Uri? = null, clearLink: () 
                         go("history")
                     }
                 }
-                composable("settings") { SettingsScreen(state, vm) }
+                composable("settings") { SettingsScreen(state, vm) { go("home") } }
                 composable("cloud-auth") {
                     Column(Modifier.fillMaxSize()) {
                         Row(Modifier.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                             IconButton({ nav.popBackStack() }) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, tr("Back")) }
                             Text(tr("Cloud sync"), style = MaterialTheme.typography.headlineSmall)
                         }
-                        CloudSettings(state, vm)
+                        CloudSettings(state, vm) { go("home") }
                     }
                 }
                 composable("entry/{type}/{id}/{duplicate}",
@@ -117,8 +118,8 @@ fun LedgerApp(vm: LedgerViewModel, link: android.net.Uri? = null, clearLink: () 
         }
         val authState = authCallback
         if (authState != null) {
-            AuthCallbackDialog(authState, vm) { nav.navigate("cloud-auth") { launchSingleTop = true } }
-        } else IncomingInvitation(link, vm, clearLink)
+            AuthCallbackDialog(authState, vm, ::openCloud)
+        } else IncomingInvitation(link, vm, clearLink, ::openCloud) { go("home") }
         val item = if (authState == null) state.ledger.entries.find { it.id == entryDetails } else null
         if (item != null) AlertDialog(
             onDismissRequest = { entryDetails = null },

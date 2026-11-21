@@ -120,8 +120,10 @@ class CloudAuth internal constructor(
         endSession(grant.access)
     }
 
-    suspend fun current(forceRefresh: Boolean = false): Session? = mutex.withLock {
-        val old = session.value ?: vault.read()?.also { publish(it) } ?: return@withLock null
+    suspend fun current(forceRefresh: Boolean = false, expectedUserId: String? = null): Session? = mutex.withLock {
+        val old = session.value ?: vault.read() ?: return@withLock null
+        if (expectedUserId != null && old.userId != expectedUserId) return@withLock null
+        if (session.value == null) publish(old)
         if (!forceRefresh && old.expiresAt > now() / 1000 + 45) return@withLock old
         try {
             val value = authRequest("/auth/v1/token?grant_type=refresh_token", "Sign in again to resume sync.", buildJsonObject {
