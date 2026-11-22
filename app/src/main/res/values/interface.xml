@@ -253,4 +253,18 @@
     <string name="ui_manual">Manual</string>
     <string name="ui_unavailable">Unavailable</string>
     <string name="ui_saved_rates_hint">Saved rates can be used offline. Existing converted amounts keep their recorded rate.</string>
+    <string name="history_group_expand">Expand group</string>
+    <string name="history_group_collapse">Collapse group</string>
+    <string name="history_group_expanded">Expanded</string>
+    <string name="history_group_collapsed">Collapsed</string>
+    <string name="history_group_transfers_sent">Transfers sent</string>
+    <string name="history_unassigned_payer">Unassigned payer</string>
+    <plurals name="history_group_transactions">
+        <item quantity="one">%d transaction</item>
+        <item quantity="other">%d transactions</item>
+    </plurals>
+    <plurals name="history_group_partial">
+        <item quantity="one">Partial total · %d rate pending</item>
+        <item quantity="other">Partial total · %d rates pending</item>
+    </plurals>
 </resources>

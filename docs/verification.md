@@ -54,6 +54,10 @@ The main budget panel previously showed a read-only preview. The only override w
 
 Room tests cover income and expenses, history across dates and scopes, refresh and deletion, independent bank and budget valuations, and Room 6 to 7 and JSON restore. The clean debug build passed 35 JVM tests and 35 Android 15 tests. Lint reported zero errors and five warnings, and all six local SQL suites passed. Two authenticated clients on the disposable local Supabase API received the same 100 USD account credit and 11,400 RSD valuation. Hosted deployment is outside this verification. [Apply the migrations](setup-guide.md#5-apply-and-verify-the-database-migrations)
 
+## Transaction group headers
+
+The debug build passed 42 JVM tests and 36 Android 15 instrumented tests. Lint reported zero errors and five warnings. The group tests cover all four grouping modes, date ranges and filters, stored multi-currency valuations, partial totals, transfer amounts, and a 10,000-transaction group. The editor and history tests verify that collapsed totals update after create, edit, and delete. Room fixtures cover imports and remote snapshots. The history test also passed on a 320 dp Android viewport in dark mode with 125% font scaling.
+
 ## Transaction deletion and sync recovery
 
 The linked hosted schema was inspected with read-only queries. The live `ledger_apply` body matched the original migration. The hosted project had versions through `202611210001` and no user-defined transaction trigger at the time of inspection. Its transaction columns use a default of 1 for `version`, and `deleted_at` is nullable.

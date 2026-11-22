@@ -39,6 +39,8 @@ class DeletionSyncTest {
                     assertTrue(editor.sync.synchronize())
                     assertEquals(BigDecimal("21.5"), first.usdBalance())
                     assertEquals(BigDecimal("2500"), editor.totals().expenses)
+                    assertEquals(BigDecimal("2500"), editor.groups().single().totals.expenses)
+                    assertEquals(2, editor.groups().single().entries.size)
                     val entry = checkNotNull(first.dao.entry(EXPENSE))
                     val legacy = entry.copy(accountRateDate = null)
                     first.dao.put(legacy)
@@ -49,6 +51,7 @@ class DeletionSyncTest {
                     assertNull(pending.payload()?.string("accountRateDate"))
                     assertNotNull(pending.payload()?.string("accountAmount"))
                     assertTrue(first.dao.entriesFlow(BUDGET).first().none { it.id == EXPENSE })
+                    assertEquals(0, first.groups().single().totals.outgoing.count)
                     assertEquals(BigDecimal("43"), first.usdBalance())
                     server.offline.add(OWNER)
                     assertFalse(first.sync.synchronize())
@@ -73,6 +76,7 @@ class DeletionSyncTest {
                     assertTrue(editor.sync.synchronize())
                     assertEquals(BigDecimal.ZERO, editor.totals().income)
                     assertEquals(BigDecimal("2500"), editor.totals().expenses)
+                    assertEquals(listOf(EXPENSE), editor.groups().single().entries.map(Entry::id))
 
                     server.reject.clear()
                     editor.editExpense("Accepted edit")
@@ -87,6 +91,7 @@ class DeletionSyncTest {
                         assertNotNull(client.dao.entry(EXPENSE)?.deletedAt)
                         assertEquals(BigDecimal.ZERO, client.usdBalance())
                         assertEquals(BigDecimal.ZERO, client.totals().expenses)
+                        assertTrue(client.groups().isEmpty())
                         assertNull(client.repo.bankRates.offer(BankPair(BUDGET, ACCOUNT, "RSD", "USD", EntryType.EXPENSE), DAY))
                     }
                     assertEquals(3, server.writes.getValue(EXPENSE).size)
@@ -183,6 +188,7 @@ class DeletionSyncTest {
 
         suspend fun usdBalance(): BigDecimal = accountBalance(checkNotNull(dao.account(ACCOUNT)), dao.entries(BUDGET)).value
         suspend fun totals(): Totals = totals(dao.entries(BUDGET), "RSD")
+        suspend fun groups() = transactionGroups(dao.entriesFlow(BUDGET).first(), "RSD", Entry::date)
         suspend fun editExpense(note: String) =
             repo.saveEntry(BUDGET, EntryDraft(EntryType.EXPENSE, BigDecimal("2500"), DAY, ACCOUNT, CATEGORY, "RSD", note), EXPENSE)
         override fun close() = db.close()

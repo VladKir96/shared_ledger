@@ -253,4 +253,20 @@
     <string name="ui_manual">Ručno</string>
     <string name="ui_unavailable">Nedostupno</string>
     <string name="ui_saved_rates_hint">Sačuvani kursevi rade van mreže. Evidentirane transakcije zadržavaju svoj kurs.</string>
+    <string name="history_group_expand">Proširi grupu</string>
+    <string name="history_group_collapse">Skupi grupu</string>
+    <string name="history_group_expanded">Proširena</string>
+    <string name="history_group_collapsed">Skupljena</string>
+    <string name="history_group_transfers_sent">Poslati transferi</string>
+    <string name="history_unassigned_payer">Platilac nije naveden</string>
+    <plurals name="history_group_transactions">
+        <item quantity="one">%d transakcija</item>
+        <item quantity="few">%d transakcije</item>
+        <item quantity="other">%d transakcija</item>
+    </plurals>
+    <plurals name="history_group_partial">
+        <item quantity="one">Delimičan zbir · nedostaje %d kurs</item>
+        <item quantity="few">Delimičan zbir · nedostaju %d kursa</item>
+        <item quantity="other">Delimičan zbir · nedostaje %d kurseva</item>
+    </plurals>
 </resources>

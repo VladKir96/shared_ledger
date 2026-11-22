@@ -53,6 +53,9 @@ class ImportMergeTest {
             assertEquals("2026-01-02", purchase.date)
             assertEquals("117.2", purchase.budgetRate)
             assertEquals("2349.86", purchase.budgetAmount)
+            val foodGroup = transactionGroups(stored, target.currency) { it.categoryId.orEmpty() }.single { it.key == groceries.id }
+            assertEquals(2, foodGroup.entries.size)
+            assertEquals(BigDecimal("2361.86"), foodGroup.totals.expenses)
             val card = repo.dao.accounts(target.id).single { it.currency == "EUR" }
             assertEquals("Cash", card.name)
             assertEquals(AccountType.CASH, card.type)

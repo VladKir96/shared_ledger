@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -21,11 +22,21 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.sharedledger.R
 import dev.sharedledger.data.*
 import dev.sharedledger.domain.*
+import java.text.NumberFormat
 import java.time.LocalDate
 
 @Composable
@@ -108,27 +119,28 @@ private fun SummaryFigure(label: String, value: String, tint: Color, modifier: M
     }
 }
 
-enum class GroupBy { DATE, CATEGORY, ACCOUNT, PAYER }
+enum class GroupBy {
+    DATE, CATEGORY, ACCOUNT, PAYER;
+
+    fun key(entry: Entry): String = when (this) {
+        DATE -> entry.date
+        CATEGORY -> entry.categoryId ?: "transfer"
+        ACCOUNT -> entry.accountId
+        PAYER -> entry.payer.orEmpty()
+    }
+}
 
 @Composable
 fun HistoryScreen(state: LedgerState, vm: LedgerViewModel, openEntry: (Entry) -> Unit) {
     var group by rememberSaveable { mutableStateOf(GroupBy.DATE) }
     var expandedFilters by rememberSaveable { mutableStateOf(false) }
-    var collapsed by remember(group) { mutableStateOf(setOf<String>()) }
-    val names = remember(state.ledger) { state.ledger.categories.associate { it.id to it.name } }
-    val accounts = remember(state.ledger) { state.ledger.accounts.associate { it.id to it.name } }
-    val members = remember(state.ledger) { state.ledger.members.associate { it.userId to it.name } }
-    val grouping = remember(state.entries, group) {
-        state.entries.groupBy {
-            when (group) {
-                GroupBy.DATE -> it.date
-                GroupBy.CATEGORY -> it.categoryId ?: "transfer"
-                GroupBy.ACCOUNT -> it.accountId
-                GroupBy.PAYER -> it.payer ?: ""
-            }
-        }
-    }
     val budget = state.budget
+    val currency = budget?.currency ?: state.preferences.defaultCurrency
+    var collapsed by remember(group, budget?.id) { mutableStateOf(setOf<String>()) }
+    val names = remember(state.ledger.categories) { state.ledger.categories.associate { it.id to it.name } }
+    val accounts = remember(state.ledger.accounts) { state.ledger.accounts.associate { it.id to it.name } }
+    val members = remember(state.ledger.members) { state.ledger.members.associate { it.userId to it.name } }
+    val grouping = remember(state.entries, group, currency) { transactionGroups(state.entries, currency, group::key) }
     val focus = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
     LazyColumn(Modifier.fillMaxSize().testTag("history-list"), contentPadding = PaddingValues(20.dp, 14.dp, 20.dp, 22.dp),
@@ -193,30 +205,85 @@ fun HistoryScreen(state: LedgerState, vm: LedgerViewModel, openEntry: (Entry) ->
             }
         }
         if (grouping.isEmpty()) item { Panel { EmptyMessage(tr("No matching transactions"), tr("Change the date range or clear your filters.")) } }
-        grouping.forEach { (key, entries) ->
-            val title = when (group) {
-                GroupBy.DATE -> LocalDate.parse(key).shortDate()
-                GroupBy.CATEGORY -> names[key] ?: "Transfers"
-                GroupBy.ACCOUNT -> accounts[key] ?: "Account"
-                GroupBy.PAYER -> members[key] ?: "Unassigned payer"
-            }
-            item("header-$key") {
-                Surface(shape = RoundedCornerShape(13.dp), color = MaterialTheme.colorScheme.surfaceContainer,
-                    modifier = Modifier.fillMaxWidth().clickable { collapsed = if (key in collapsed) collapsed - key else collapsed + key }) {
-                    Row(Modifier.padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(if (key in collapsed) Icons.Outlined.ExpandMore else Icons.Outlined.ExpandLess,
-                            if (key in collapsed) "Expand" else "Collapse")
-                        Spacer(Modifier.width(8.dp))
-                        Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                        Text(entries.size.toString(), style = MaterialTheme.typography.labelMedium)
-                    }
+        grouping.forEach { summary ->
+            val key = summary.key
+            val expanded = key !in collapsed
+            item("header-$group-$key") {
+                val title = when (group) {
+                    GroupBy.DATE -> LocalDate.parse(key).shortDate()
+                    GroupBy.CATEGORY -> names[key] ?: tr(if (key == "transfer") "Transfers" else "Uncategorized")
+                    GroupBy.ACCOUNT -> accounts[key] ?: tr("Account")
+                    GroupBy.PAYER -> members[key] ?: stringResource(R.string.history_unassigned_payer)
+                }
+                TransactionGroupHeader(title, summary, currency, expanded, Modifier.animateItem()) {
+                    collapsed = if (expanded) collapsed + key else collapsed - key
                 }
             }
-            if (key !in collapsed) items(entries, key = { it.id }) { entry ->
-                Surface(shape = RoundedCornerShape(13.dp), color = MaterialTheme.colorScheme.surface) {
-                    Box(Modifier.padding(horizontal = 10.dp)) { EntryRow(entry, state.ledger, state.budget?.currency ?: entry.budgetCurrency) { openEntry(entry) } }
+            if (expanded) items(summary.entries, key = { it.id }) { entry ->
+                Surface(modifier = Modifier.animateItem(), shape = RoundedCornerShape(13.dp), color = MaterialTheme.colorScheme.surface) {
+                    Box(Modifier.padding(horizontal = 10.dp)) { EntryRow(entry, state.ledger, currency) { openEntry(entry) } }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun TransactionGroupHeader(title: String, group: TransactionGroup, currency: String, expanded: Boolean,
+                                   modifier: Modifier = Modifier, toggle: () -> Unit) {
+    val count = group.entries.size
+    val countDescription = pluralStringResource(R.plurals.history_group_transactions, count, count)
+    val action = stringResource(if (expanded) R.string.history_group_collapse else R.string.history_group_expand)
+    val status = stringResource(if (expanded) R.string.history_group_expanded else R.string.history_group_collapsed)
+    val totals = group.totals
+    val mixed = totals.incoming.count > 0 && totals.outgoing.count > 0
+
+    Surface(shape = RoundedCornerShape(13.dp), color = MaterialTheme.colorScheme.surfaceContainer,
+        modifier = modifier.fillMaxWidth().testTag("history-group-${group.key}")
+            .clickable(onClickLabel = action, onClick = toggle).semantics { stateDescription = status }) {
+        Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(9.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Icon(if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, contentDescription = null,
+                    modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(title, Modifier.weight(1f, fill = false), style = MaterialTheme.typography.titleMedium,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.clearAndSetSemantics { contentDescription = countDescription }) {
+                    Text(NumberFormat.getIntegerInstance(LedgerFormats.locale).format(count),
+                        Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            Column(Modifier.weight(1f), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                if (totals.incoming.count > 0) GroupAmount(totals.incoming, EntryType.INCOME, currency, mixed)
+                if (totals.outgoing.count > 0) GroupAmount(totals.outgoing, EntryType.EXPENSE, currency, mixed)
+                if (totals.pending > 0 && (totals.incoming.hasAmount || totals.outgoing.hasAmount)) {
+                    Text(pluralStringResource(R.plurals.history_group_partial, totals.pending, totals.pending),
+                        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.End)
+                }
+                if (group.transfersByCurrency.isNotEmpty()) {
+                    Text(stringResource(R.string.history_group_transfers_sent), style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.End)
+                    group.transfersByCurrency.forEach { (source, amount) ->
+                        Text(money(amount, source), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold,
+                            textAlign = TextAlign.End)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GroupAmount(total: DirectionTotal, type: EntryType, currency: String, mixed: Boolean) {
+    val income = type == EntryType.INCOME
+    val label = if (mixed) tr(if (income) "Income" else "Expenses") + " · " else ""
+    val amount = if (total.hasAmount) {
+        (if (total.approximate) "≈ " else "") + (if (income) "+" else "−") + money(total.amount, currency)
+    } else tr("Rate pending")
+    Text(label + amount, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.End,
+        color = if (income) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
 }

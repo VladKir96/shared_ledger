@@ -5,35 +5,63 @@ import dev.sharedledger.data.Entry
 import java.math.BigDecimal
 import java.time.LocalDate
 
-data class Totals(val income: BigDecimal = BigDecimal.ZERO, val expenses: BigDecimal = BigDecimal.ZERO, val pending: Int = 0,
-                  val approximateIncome: Boolean = false, val approximateExpenses: Boolean = false) {
+data class DirectionTotal(
+    val amount: BigDecimal = BigDecimal.ZERO, val count: Int = 0, val pending: Int = 0, val approximate: Boolean = false
+) {
+    val hasAmount get() = count > pending
+}
+
+data class Totals(val incoming: DirectionTotal = DirectionTotal(), val outgoing: DirectionTotal = DirectionTotal()) {
+    val income get() = incoming.amount
+    val expenses get() = outgoing.amount
+    val pending get() = incoming.pending + outgoing.pending
+    val approximateIncome get() = incoming.approximate
+    val approximateExpenses get() = outgoing.approximate
     val net: BigDecimal get() = income.subtract(expenses)
     val approximate get() = approximateIncome || approximateExpenses
 }
 
 fun totals(entries: List<Entry>, currency: String): Totals {
-    var income = BigDecimal.ZERO
-    var expenses = BigDecimal.ZERO
-    var pending = 0
-    var estimatedIncome = false
-    var estimatedExpenses = false
+    val income = DirectionAccumulator()
+    val expenses = DirectionAccumulator()
     entries.forEach { entry ->
         if (entry.deletedAt != null || entry.type == EntryType.TRANSFER) return@forEach
-        val amount = entry.budgetAmount?.takeIf { entry.budgetCurrency == currency }?.decimal()
-        when {
-            amount == null -> pending++
-            entry.type == EntryType.INCOME -> {
-                income += amount
-                estimatedIncome = estimatedIncome || entry.isBudgetApproximate()
-            }
-            else -> {
-                expenses += amount
-                estimatedExpenses = estimatedExpenses || entry.isBudgetApproximate()
-            }
+        (if (entry.type == EntryType.INCOME) income else expenses).add(entry, currency)
+    }
+    return Totals(income.summary(), expenses.summary())
+}
+
+private class DirectionAccumulator {
+    private var amount = BigDecimal.ZERO
+    private var count = 0
+    private var pending = 0
+    private var approximate = false
+
+    fun add(entry: Entry, currency: String) {
+        count++
+        val value = entry.budgetAmount?.takeIf { entry.budgetCurrency == currency }?.decimal()
+        if (value == null) pending++ else {
+            amount += value
+            approximate = approximate || entry.isBudgetApproximate()
         }
     }
-    return Totals(income, expenses, pending, estimatedIncome, estimatedExpenses)
+
+    fun summary() = DirectionTotal(amount, count, pending, approximate)
 }
+
+data class TransactionGroup(
+    val key: String, val entries: List<Entry>, val totals: Totals, val transfersByCurrency: Map<String, BigDecimal>
+)
+
+fun transactionGroups(entries: List<Entry>, currency: String, key: (Entry) -> String): List<TransactionGroup> =
+    entries.asSequence().filter { it.deletedAt == null }.groupBy(key).map { (group, rows) ->
+        val totals = totals(rows, currency)
+        // Transfer-only groups can show what was sent, without counting either leg as budget activity.
+        val transfers = if (totals.incoming.count == 0 && totals.outgoing.count == 0) {
+            rows.groupingBy(Entry::currency).fold(BigDecimal.ZERO) { amount, entry -> amount + entry.amount.decimal() }
+        } else emptyMap()
+        TransactionGroup(group, rows, totals, transfers)
+    }
 
 data class Balance(val value: BigDecimal, val pending: Int)
 

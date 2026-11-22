@@ -465,6 +465,14 @@ where m.budget_id = 'YOUR_BUDGET_UUID'::uuid and m.user_id = 'USER_B_UUID'::uuid
 
 Look for one active membership with the intended role and a confirmation timestamp. The timestamp verifies email confirmation. A separate sign-in or refresh check verifies the Android session. The owner can check the invitation's expiry, revocation, and use count in **Cloud sync** or **Table Editor → invitations**. The database stores the code as a hash.
 
+### Read transaction group totals
+
+In **Transactions**, choose a date range and select **Group by → Date, Category, Account, or Payer**. Each header shows the count and totals for the rows that match the current filters, including search. Tap the header to collapse the rows and keep the totals visible.
+
+Mixed groups show income and expenses separately in the selected budget currency, using the valuations saved on each transaction. **≈** marks an estimated valuation. **Partial total** indicates that one or more transactions still need a budget conversion.
+
+Transfers count as transactions and are excluded from income and expenses. A transfer-only group shows the amount sent in each source currency. Account groups show filtered activity for the source account. For account balances, use **Settings → Accounts**.
+
 ### Recording bank conversions
 
 1. Add an expense or income. Select the account and then the original transaction currency. A USD account and an RSD purchase open the two-amount editor.

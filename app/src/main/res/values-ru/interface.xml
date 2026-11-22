@@ -253,4 +253,22 @@
     <string name="ui_manual">Вручную</string>
     <string name="ui_unavailable">Недоступно</string>
     <string name="ui_saved_rates_hint">Сохранённые курсы доступны без сети. Курсы записанных операций сохраняются.</string>
+    <string name="history_group_expand">Развернуть группу</string>
+    <string name="history_group_collapse">Свернуть группу</string>
+    <string name="history_group_expanded">Развёрнута</string>
+    <string name="history_group_collapsed">Свёрнута</string>
+    <string name="history_group_transfers_sent">Отправленные переводы</string>
+    <string name="history_unassigned_payer">Плательщик не указан</string>
+    <plurals name="history_group_transactions">
+        <item quantity="one">%d операция</item>
+        <item quantity="few">%d операции</item>
+        <item quantity="many">%d операций</item>
+        <item quantity="other">%d операции</item>
+    </plurals>
+    <plurals name="history_group_partial">
+        <item quantity="one">Неполный итог · не хватает %d курса</item>
+        <item quantity="few">Неполный итог · не хватает %d курсов</item>
+        <item quantity="many">Неполный итог · не хватает %d курсов</item>
+        <item quantity="other">Неполный итог · не хватает %d курса</item>
+    </plurals>
 </resources>
