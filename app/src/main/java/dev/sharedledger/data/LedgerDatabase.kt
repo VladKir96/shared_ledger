@@ -35,6 +35,11 @@ interface LedgerDao {
     suspend fun entries(budget: String): List<Entry>
     @Query("SELECT * FROM entries WHERE id = :id")
     suspend fun entry(id: String): Entry?
+    @Query("""SELECT * FROM entries WHERE budgetId = :budget AND accountId = :account AND currency = :currency
+        AND accountCurrency = :accountCurrency AND type = :direction AND deletedAt IS NULL AND bankConversion IS NOT NULL
+        AND date <= :day ORDER BY date DESC, id DESC""")
+    suspend fun bankEntries(budget: String, account: String, currency: String, accountCurrency: String,
+                            direction: dev.sharedledger.domain.EntryType, day: String): List<Entry>
     @Query("SELECT * FROM rules WHERE budgetId = :budget AND deletedAt IS NULL ORDER BY start")
     fun rulesFlow(budget: String): Flow<List<Rule>>
     @Query("SELECT * FROM rules WHERE budgetId = :budget")
@@ -107,6 +112,15 @@ interface LedgerDao {
     suspend fun removePending(kind: String, record: String)
     @Query("DELETE FROM outbox WHERE budgetId = :budget")
     suspend fun removeBudgetChanges(budget: String)
+    @Query("DELETE FROM outbox WHERE principal = :principal")
+    suspend fun removePrincipalChanges(principal: String)
+    @Query("SELECT syncedAt FROM sync_checkpoints WHERE principal = :principal")
+    suspend fun lastSync(principal: String): Long?
+    @Query("SELECT syncedAt FROM sync_checkpoints WHERE principal = :principal")
+    fun lastSyncFlow(principal: String): Flow<Long?>
+    @Upsert suspend fun put(value: SyncCheckpoint)
+    @Query("DELETE FROM sync_checkpoints WHERE principal = :principal")
+    suspend fun removeSyncCheckpoint(principal: String)
     @Query("DELETE FROM remote_versions WHERE budgetId = :budget")
     suspend fun removeVersions(budget: String)
     @Query("DELETE FROM members WHERE budgetId = :budget")
@@ -132,14 +146,37 @@ interface LedgerDao {
 
 @Database(
     entities = [Budget::class, Account::class, Category::class, Entry::class, Rule::class, Rate::class, Member::class,
-        Preferences::class, PendingChange::class, RemoteVersion::class, RateCheck::class, RateSyncRecord::class, ImportLink::class],
-    version = 4,
+        Preferences::class, PendingChange::class, RemoteVersion::class, RateCheck::class, RateSyncRecord::class, ImportLink::class,
+        BankLearningReset::class, SyncCheckpoint::class],
+    version = 6,
     exportSchema = true
 )
+@TypeConverters(BankConversionConverter::class)
 abstract class LedgerDatabase : RoomDatabase() {
     abstract fun ledger(): LedgerDao
 
     companion object {
+        val MIGRATION_5_6 = object : androidx.room.migration.Migration(5, 6) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE outbox ADD COLUMN principal TEXT")
+                db.execSQL("ALTER TABLE outbox ADD COLUMN failure TEXT")
+                db.execSQL("UPDATE outbox SET principal = (SELECT principal FROM budgets WHERE budgets.id = outbox.budgetId)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS sync_checkpoints (principal TEXT NOT NULL, syncedAt INTEGER NOT NULL, PRIMARY KEY (principal))")
+                db.execSQL("DELETE FROM remote_versions WHERE kind = 'snapshot'")
+            }
+        }
+
+        val MIGRATION_4_5 = object : androidx.room.migration.Migration(4, 5) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE entries ADD COLUMN bankConversion TEXT")
+                db.execSQL("ALTER TABLE settings ADD COLUMN smartBankRates INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("""CREATE TABLE IF NOT EXISTS bank_learning_resets (
+                    accountId TEXT NOT NULL, currency TEXT NOT NULL, accountCurrency TEXT NOT NULL, direction TEXT NOT NULL,
+                    resetAt INTEGER NOT NULL, PRIMARY KEY (accountId, currency, accountCurrency, direction),
+                    FOREIGN KEY (accountId) REFERENCES accounts (id) ON UPDATE NO ACTION ON DELETE CASCADE)""")
+            }
+        }
+
         val MIGRATION_3_4 = object : androidx.room.migration.Migration(3, 4) {
             override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE outbox ADD COLUMN imported INTEGER NOT NULL DEFAULT 0")

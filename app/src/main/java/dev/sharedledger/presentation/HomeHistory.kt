@@ -73,12 +73,12 @@ fun HomeScreen(state: LedgerState, vm: LedgerViewModel, openEntry: (Entry) -> Un
                     Text(tr("Net cash flow"), color = Mint, style = MaterialTheme.typography.labelLarge)
                     Icon(Icons.Outlined.AccountBalanceWallet, null, tint = Mint)
                 }
-                Text(money(state.totals.net, budget.currency), color = Color.White, style = MaterialTheme.typography.displaySmall,
+                Text(valuationMoney(state.totals.net, budget.currency, state.totals.approximate), color = Color.White, style = MaterialTheme.typography.displaySmall,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
                 HorizontalDivider(color = Color.White.copy(alpha = .18f))
                 Row {
-                    SummaryFigure("Income", money(state.totals.income, budget.currency), Mint, Modifier.weight(1f))
-                    SummaryFigure("Expenses", money(state.totals.expenses, budget.currency), Color(0xFFFFC9B6), Modifier.weight(1f))
+                    SummaryFigure("Income", valuationMoney(state.totals.income, budget.currency, state.totals.approximateIncome), Mint, Modifier.weight(1f))
+                    SummaryFigure("Expenses", valuationMoney(state.totals.expenses, budget.currency, state.totals.approximateExpenses), Color(0xFFFFC9B6), Modifier.weight(1f))
                 }
             }
         }
@@ -94,7 +94,7 @@ fun HomeScreen(state: LedgerState, vm: LedgerViewModel, openEntry: (Entry) -> Un
                     TextButton({ openHistory(null, null) }) { Text(tr("View all")) }
                 }
                 if (state.entries.isEmpty()) EmptyMessage(tr("No transactions in this period"), tr("Add an expense or income to get started."))
-                state.entries.take(5).forEach { EntryRow(it, state.ledger) { openEntry(it) } }
+                state.entries.take(5).forEach { EntryRow(it, state.ledger, budget.currency) { openEntry(it) } }
             }
         }
     }
@@ -214,7 +214,7 @@ fun HistoryScreen(state: LedgerState, vm: LedgerViewModel, openEntry: (Entry) ->
             }
             if (key !in collapsed) items(entries, key = { it.id }) { entry ->
                 Surface(shape = RoundedCornerShape(13.dp), color = MaterialTheme.colorScheme.surface) {
-                    Box(Modifier.padding(horizontal = 10.dp)) { EntryRow(entry, state.ledger) { openEntry(entry) } }
+                    Box(Modifier.padding(horizontal = 10.dp)) { EntryRow(entry, state.ledger, state.budget?.currency ?: entry.budgetCurrency) { openEntry(entry) } }
                 }
             }
         }

@@ -26,6 +26,7 @@ data class ImportReview internal constructor(
     val warnings: List<String>,
     val accounts: List<String>,
     val categories: List<String>,
+    val sample: Entry?,
     internal val fingerprint: String
 )
 
@@ -145,7 +146,8 @@ internal class ImportMerge(private val repo: LedgerRepository) {
                 categoryId = entry.categoryId?.let(::category), destinationId = entry.destinationId?.let(::account),
                 ruleId = rule, payer = null, creator = null, amount = entry.amount.importDecimal(),
                 accountAmount = entry.accountAmount?.importDecimal(), budgetAmount = entry.budgetAmount?.importDecimal(),
-                destinationAmount = entry.destinationAmount?.importDecimal())
+                destinationAmount = entry.destinationAmount?.importDecimal(),
+                bankConversion = entry.bankConversion?.copy(learningEligible = false))
             require(taken.add(linked.id)) { "The file maps more than one transaction to the same record." }
             if (mapped.existing != null) {
                 if (mapped.existing.deletedAt == null && mapped.existing.sameImport(linked)) duplicates++
@@ -169,7 +171,7 @@ internal class ImportMerge(private val repo: LedgerRepository) {
             entries.joinToString("|", prefix = "|") { it.id } + (existing == null))
         return Plan(ImportReview(budget, entries.size, accounts.size, accountMap.size - accounts.size,
             categories.size, categoryMap.values.count { it.existing != null }, duplicates, attention, warnings,
-            accountDetails, categoryDetails, fingerprint),
+            accountDetails, categoryDetails, entries.firstOrNull(), fingerprint),
             existing == null, accounts + categories + rules + entries, context.links)
     }
 }

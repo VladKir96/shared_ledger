@@ -26,7 +26,9 @@ data class EntryRatePlan(
         )
 
     private fun existingAccount() = accountStored() ?: budgetStored().takeIf { account == budget }
-    private fun existingBudget() = budgetStored() ?: accountStored().takeIf { account == budget }
+    private fun existingBudget() = budgetStored() ?: accountStored()?.takeIf {
+        account == budget && stored?.bankConversion == null && !it.source.startsWith(MANUAL_RATE)
+    }
 
     private fun accountStored(): RateQuote? = stored?.takeIf { it.accountCurrency == account && it.accountAmount != null }?.let {
         storedQuote(it.accountRate, it.accountRateDate, it.accountRateSource)

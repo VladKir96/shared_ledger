@@ -5,24 +5,34 @@ import dev.sharedledger.data.Entry
 import java.math.BigDecimal
 import java.time.LocalDate
 
-data class Totals(val income: BigDecimal = BigDecimal.ZERO, val expenses: BigDecimal = BigDecimal.ZERO, val pending: Int = 0) {
+data class Totals(val income: BigDecimal = BigDecimal.ZERO, val expenses: BigDecimal = BigDecimal.ZERO, val pending: Int = 0,
+                  val approximateIncome: Boolean = false, val approximateExpenses: Boolean = false) {
     val net: BigDecimal get() = income.subtract(expenses)
+    val approximate get() = approximateIncome || approximateExpenses
 }
 
 fun totals(entries: List<Entry>, currency: String): Totals {
     var income = BigDecimal.ZERO
     var expenses = BigDecimal.ZERO
     var pending = 0
+    var estimatedIncome = false
+    var estimatedExpenses = false
     entries.forEach { entry ->
         if (entry.deletedAt != null || entry.type == EntryType.TRANSFER) return@forEach
         val amount = entry.budgetAmount?.takeIf { entry.budgetCurrency == currency }?.decimal()
         when {
             amount == null -> pending++
-            entry.type == EntryType.INCOME -> income += amount
-            else -> expenses += amount
+            entry.type == EntryType.INCOME -> {
+                income += amount
+                estimatedIncome = estimatedIncome || entry.isBudgetApproximate()
+            }
+            else -> {
+                expenses += amount
+                estimatedExpenses = estimatedExpenses || entry.isBudgetApproximate()
+            }
         }
     }
-    return Totals(income, expenses, pending)
+    return Totals(income, expenses, pending, estimatedIncome, estimatedExpenses)
 }
 
 data class Balance(val value: BigDecimal, val pending: Int)
@@ -79,3 +89,8 @@ fun spendingBy(entries: List<Entry>, currency: String, type: EntryType = EntryTy
     }
     return result.toList().sortedByDescending { it.second }.toMap()
 }
+
+fun estimatedGroups(entries: List<Entry>, currency: String, type: EntryType, key: (Entry) -> String?): Set<String?> =
+    entries.asSequence().filter {
+        it.deletedAt == null && it.type == type && it.budgetCurrency == currency && it.isBudgetApproximate()
+    }.map(key).toSet()

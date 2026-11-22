@@ -45,7 +45,7 @@ class SyncEngine internal constructor(
     val configured get() = api.configured
     private val invitationService = InvitationService(auth, api::rpc) { Log.i("SharedLedgerInvite", it) }
 
-    suspend fun synchronize(): Boolean = lock.withLock {
+    suspend fun synchronize(retryFailed: Boolean = false): Boolean = lock.withLock {
         if (!configured) return true
         status.value = status.value.copy(running = true, text = "Checking for changes…")
         try {
@@ -54,59 +54,142 @@ class SyncEngine internal constructor(
                 status.value = SyncStatus(text = "Sign in to sync")
                 return true
             }
-            var warning = pull(session, keepLocalCreations = true)
-            var issue: CloudError? = null
-            val rejected = mutableSetOf<String>()
-            val pending = dao.pending()
-            val blocked = pending.filter { it.imported && it.remoteVersion != null && it.kind != "entry" }
-                .mapTo(hashSetOf()) { it.budgetId }
-            if (blocked.isNotEmpty()) warning = "Resolve imported account, category, or rule conflicts to resume that import."
-            val queue = pending.filter { it.remoteVersion == null }
-            var index = 0
-            while (index < queue.size) {
-                val change = queue[index++]
-                if (change.budgetId in rejected || change.imported && change.budgetId in blocked ||
-                    dao.budget(change.budgetId)?.principal != session.userId || repo.principal.value != session.userId) continue
-                try {
-                    if (change.isImportCreation()) {
-                        val batch = buildList {
-                            add(change)
-                            while (size < 50 && index < queue.size) {
-                                val next = queue[index]
-                                if (next.budgetId != change.budgetId || !next.isImportCreation()) break
-                                add(next)
-                                index++
-                            }
-                        }
-                        if (!pushImport(session, batch)) rejected.add(change.budgetId)
-                    } else {
-                        val value = api.rpc("ledger_apply", session.access, buildJsonObject {
-                            put("p_kind", change.kind); put("p_budget", change.budgetId); put("p_id", change.recordId)
-                            put("p_base", change.baseVersion); put("p_operation", change.operationId)
-                            put("p_body", ledgerJson.parseToJsonElement(change.body))
-                        }).jsonObject
-                        applyPush(session, change, value)
-                    }
-                } catch (e: CloudError) {
-                    if (e.status == 401 || e.status == 0 || e.status >= 500 || e.status == 429) throw e
-                    issue = e
-                    rejected.add(change.budgetId)
-                }
+            val user = session.userId
+            status.value = status.value.copy(lastSync = dao.lastSync(user))
+            var warning = pull(session)
+            if (retryFailed) retryChanges(user)
+            pushPending(session)
+            warning = pull(session) ?: warning
+            if (repo.principal.value != user) {
+                status.value = SyncStatus(text = "Sign in to sync")
+                return true
             }
-            warning = pull(session, keepLocalCreations = true) ?: warning
-            status.value = SyncStatus(text = warning ?: issue?.message ?: "Up to date", lastSync = System.currentTimeMillis())
+            val remaining = scopedPending(user)
+            val text = when {
+                warning != null -> warning
+                remaining.any { it.failure != null && it.deletesEntry() } -> "A transaction deletion needs attention."
+                remaining.any { it.failure != null } -> "Some changes need attention."
+                remaining.any { it.remoteVersion != null } -> "Resolve conflicting changes to finish syncing."
+                remaining.isNotEmpty() -> "Changes are waiting for related records to sync."
+                else -> "Up to date"
+            }
+            val lastSync = if (remaining.isEmpty() && warning == null) {
+                System.currentTimeMillis().also { dao.put(SyncCheckpoint(user, it)) }
+            } else dao.lastSync(user)
+            status.value = SyncStatus(text = text, lastSync = lastSync)
             true
         } catch (e: CancellationException) {
             status.value = status.value.copy(running = false)
             throw e
         } catch (e: CloudError) {
-            if (e.status == 401) try { auth.current(forceRefresh = true) } catch (_: CloudError) { }
-            status.value = status.value.copy(running = false, text = e.message.orEmpty())
-            e.status != 0 && e.status != 401 && e.status != 429 && e.status < 500
+            var retry = e.isTransient
+            if (e.status == 401) {
+                try {
+                    retry = auth.current(forceRefresh = true) != null
+                } catch (refresh: CloudError) {
+                    retry = refresh.isTransient && refresh.status != 401
+                }
+            }
+            status.value = status.value.copy(running = false, text = e.syncMessage())
+            retry.not()
         } catch (e: Exception) {
-            android.util.Log.w("SharedLedger", "Sync failed (${e.javaClass.simpleName})")
+            Log.w("SharedLedgerSync", "Sync interrupted category=${e.javaClass.simpleName}")
             status.value = status.value.copy(running = false, text = "Sync interrupted. Local changes are queued.")
             false
+        }
+    }
+
+    private suspend fun scopedPending(user: String): List<PendingChange> =
+        dao.pending().filter { (it.principal ?: dao.budget(it.budgetId)?.principal) == user }
+
+    private suspend fun retryChanges(user: String) = repo.db.withTransaction {
+        if (repo.principal.value != user) return@withTransaction
+        for (change in scopedPending(user).filter { it.failure != null }) {
+            val budget = dao.budget(change.budgetId) ?: continue
+            if (budget.principal == user && budget.role != Role.VIEWER) {
+                if (change.failure == SyncFailure.CONFLICT.name && change.deletesEntry()) {
+                    dao.put(change.copy(baseVersion = change.remoteVersion ?: change.baseVersion,
+                        remoteVersion = null, remoteBody = null, failure = null))
+                } else dao.put(change.copy(failure = null))
+            }
+        }
+    }
+
+    private suspend fun pushPending(session: Session) {
+        val queue = scopedPending(session.userId)
+        val outstanding = queue.associateBy { it.key }.toMutableMap()
+        val splitImports = hashSetOf<String>()
+        var index = 0
+        while (index < queue.size && repo.principal.value == session.userId) {
+            val change = queue[index]
+            val budget = dao.budget(change.budgetId)
+            if (budget?.principal != session.userId || outstanding[change.key] == null ||
+                change.failure != null || change.remoteVersion != null && !change.deletesEntry()) {
+                index++
+                continue
+            }
+            val body = change.payload()
+            if (body == null) {
+                rejectChange(session, change, SyncFailure.INVALID)
+                index++
+                continue
+            }
+            if (change.dependencies(body).any { it in outstanding }) {
+                index++
+                continue
+            }
+
+            val batch = mutableListOf(change)
+            if (change.isImportCreation() && change.budgetId !in splitImports) {
+                val available = hashSetOf(change.key)
+                for (next in queue.subList(index + 1, minOf(index + 50, queue.size))) {
+                    if (next.budgetId != change.budgetId || !next.isImportCreation() ||
+                        next.failure != null || next.remoteVersion != null) break
+                    val payload = next.payload() ?: break
+                    if (next.dependencies(payload).any { it in outstanding && it !in available }) break
+                    batch.add(next)
+                    available.add(next.key)
+                }
+            }
+
+            val count = try {
+                if (change.isImportCreation()) pushImport(session, batch)
+                else {
+                    val value = api.rpc("ledger_apply", session.access, buildJsonObject {
+                        put("p_kind", change.kind); put("p_budget", change.budgetId); put("p_id", change.recordId)
+                        put("p_base", change.baseVersion); put("p_operation", change.operationId)
+                        put("p_body", change.pushPayload(body))
+                    }).jsonObject
+                    applyPush(session, change, value)
+                    1
+                }
+            } catch (e: CloudError) {
+                if (e.isTransient) throw e
+                if (batch.size > 1) {
+                    // The server rolls back a rejected batch. Replay one by one to identify the failure.
+                    splitImports.add(change.budgetId)
+                    continue
+                }
+                rejectChange(session, change, SyncFailure.from(e), e)
+                1
+            }
+            for (sent in batch.take(count)) {
+                val current = dao.pending(sent.kind, sent.recordId)
+                if (current == null) outstanding.remove(sent.key) else outstanding[sent.key] = current
+            }
+            index += count
+        }
+    }
+
+    private suspend fun rejectChange(session: Session, sent: PendingChange, failure: SyncFailure, error: CloudError? = null) {
+        Log.w("SharedLedgerSync", "kind=${sent.kind} delete=${sent.deletesEntry()} failure=$failure " +
+            "sqlstate=${error?.code.orEmpty()} constraint=${error?.constraintName().orEmpty()}")
+        repo.db.withTransaction {
+            if (repo.principal.value != session.userId) return@withTransaction
+            val current = dao.pending(sent.kind, sent.recordId)
+            if (current?.operationId == sent.operationId) {
+                dao.put(current.copy(failure = failure.name, principal = session.userId))
+            }
         }
     }
 
@@ -116,9 +199,9 @@ class SyncEngine internal constructor(
         api.rpc("ledger_manifest", session.access)
     }
 
-    private fun PendingChange.isImportCreation() = imported && baseVersion == 0L && kind != "budget"
+    private fun PendingChange.isImportCreation() = imported && baseVersion == 0L && kind != "budget" && !deletesEntry()
 
-    private suspend fun pushImport(session: Session, batch: List<PendingChange>): Boolean {
+    private suspend fun pushImport(session: Session, batch: List<PendingChange>): Int {
         val result = api.rpc("ledger_import_batch", session.access, buildJsonObject {
             put("p_budget", batch.first().budgetId)
             put("p_changes", buildJsonArray {
@@ -137,7 +220,7 @@ class SyncEngine internal constructor(
         repo.db.withTransaction {
             replies.forEachIndexed { i, reply -> applyPush(session, batch[i], reply) }
         }
-        return replies.last().string("status") == "ok"
+        return replies.size
     }
 
     private suspend fun applyPush(session: Session, sent: PendingChange, result: JsonObject) = repo.db.withTransaction {
@@ -147,36 +230,48 @@ class SyncEngine internal constructor(
         val remote = result["body"] as? JsonObject
         val record = remote?.let { RemoteRecord(sent.kind, version, it) }
         val budget = dao.budget(sent.budgetId) ?: return@withTransaction
-        if (result.string("status") == "ok") {
+        val response = result.string("status")
+        check(response == "ok" || response == "conflict")
+        if (record?.isEntryTombstone() == true) {
+            saveRemote(session, budget.role, record)
+            dao.removePending(sent.kind, sent.recordId)
+        } else if (response == "ok") {
             dao.put(RemoteVersion(sent.kind, sent.recordId, sent.budgetId, version))
             if (current.operationId == sent.operationId) {
                 if (record != null) saveRemote(session, budget.role, record)
                 dao.removePending(sent.kind, sent.recordId)
             } else dao.put(current.copy(baseVersion = version, remoteVersion = null, remoteBody = null))
-        } else if (record != null && (current.rateOnly || current.kind == "entry" && current.baseVersion == 0L &&
+        } else if (record != null && !current.deletesEntry() && (current.rateOnly || current.kind == "entry" && current.baseVersion == 0L &&
             record.body.string("ruleId") != null && record.body.string("deletedAt") == null && current.operationId == sent.operationId)) {
             saveRemote(session, budget.role, record)
             dao.removePending(sent.kind, sent.recordId)
         } else {
-            dao.put(current.copy(remoteVersion = version, remoteBody = remote?.toString()))
+            val failedDelete = sent.deletesEntry() && current.operationId == sent.operationId
+            dao.put(current.copy(remoteVersion = version, remoteBody = remote?.toString(),
+                failure = if (failedDelete) SyncFailure.CONFLICT.name else current.failure))
         }
     }
 
-    private suspend fun pull(session: Session, keepLocalCreations: Boolean): String? {
+    private fun RemoteRecord.isEntryTombstone() = kind == "entry" && body.string("deletedAt") != null
+
+    private suspend fun pull(session: Session): String? {
         val manifest: List<ManifestItem> = ledgerJson.decodeFromJsonElement(api.rpc("ledger_manifest", session.access))
         val accessible = manifest.mapTo(hashSetOf()) { it.id }
         var warning: String? = null
         repo.db.withTransaction {
             if (repo.principal.value != session.userId) return@withTransaction
+            val changes = dao.pending().groupBy { it.budgetId }
             for (budget in dao.protectedBudgets(session.userId)) {
                 if (budget.id in accessible) continue
-                val creating = dao.pending("budget", budget.id)?.baseVersion == 0L
-                if (!creating || !keepLocalCreations) {
-                    if (budget.deletedAt == null && dao.pending().any { it.budgetId == budget.id }) {
-                        warning = "Access was removed from a budget that had unsynced changes."
-                    }
-                    repo.purgeBudget(budget.id)
+                val pending = changes[budget.id].orEmpty()
+                val own = pending.filter { it.principal == null || it.principal == session.userId }
+                val creating = own.any { it.kind == "budget" && it.baseVersion == 0L }
+                if (creating) continue
+                if (own.isNotEmpty()) {
+                    warning = "A budget is unavailable. Its unsynced changes are saved on this device."
+                    own.forEach { dao.put(it.copy(principal = session.userId, failure = SyncFailure.PERMISSION.name)) }
                 }
+                repo.purgeBudget(budget.id, retainPending = pending.isNotEmpty())
             }
         }
         for (key in manifest) {
@@ -196,11 +291,16 @@ class SyncEngine internal constructor(
                 val role = snapshot.members.find { it.userId == session.userId && it.active }?.role ?: return@withTransaction
                 for (remote in snapshot.records) {
                     val recordId = remote.body.string("id") ?: error("Missing id")
-                    val local = dao.pending(remote.kind, recordId)
+                    val local = dao.pending(remote.kind, recordId)?.takeIf { it.principal == null || it.principal == session.userId }
                     if (local == null) saveRemote(session, role, remote)
-                    else if (local.operationId == remote.operation) {
+                    else if (remote.isEntryTombstone() || local.operationId == remote.operation) {
                         saveRemote(session, role, remote)
                         dao.removePending(local.kind, local.recordId)
+                    } else if (local.deletesEntry()) {
+                        // A pending local deletion keeps the entry hidden over an active snapshot.
+                        continue
+                    } else if (remote.kind == "budget" && previous == null) {
+                        saveRemote(session, role, remote)
                     } else if (local.rateOnly && (local.baseVersion != remote.version || role == Role.VIEWER)) {
                         saveRemote(session, role, remote)
                         dao.removePending(local.kind, local.recordId)
@@ -210,7 +310,7 @@ class SyncEngine internal constructor(
                             saveRemote(session, role, remote)
                             dao.removePending(remote.kind, recordId)
                         } else {
-                            dao.put(local.copy(remoteVersion = remote.version, remoteBody = remote.body.toString()))
+                            dao.put(local.copy(remoteVersion = remote.version, remoteBody = remote.body.toString(), failure = null))
                         }
                     }
                 }
@@ -248,7 +348,7 @@ class SyncEngine internal constructor(
             val version = current.remoteVersion ?: return@withTransaction
             if (keepLocal) {
                 if (current.kind in listOf("budget", "account", "category")) repo.writable(budget.id, true)
-                dao.put(current.copy(baseVersion = version, operationId = id(), remoteVersion = null, remoteBody = null))
+                dao.put(current.copy(baseVersion = version, operationId = id(), remoteVersion = null, remoteBody = null, failure = null))
             } else {
                 val body = current.remoteBody?.let { ledgerJson.parseToJsonElement(it).jsonObject }
                     ?: throw CloudError(409, "A server copy is unavailable. Retry synchronization.")

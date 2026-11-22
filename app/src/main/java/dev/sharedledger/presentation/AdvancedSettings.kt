@@ -76,7 +76,8 @@ private fun RecurringSettings(state: LedgerState, vm: LedgerViewModel) {
             val category = state.ledger.categories.find { it.id == rule.categoryId }
             Panel(Modifier.fillMaxWidth()) {
                 Text(rule.note.ifBlank { category?.name ?: rule.type.label() }, style = MaterialTheme.typography.titleMedium)
-                Text(money(rule.amount.decimal(), rule.currency) + " · " + rule.frequency.label())
+                RecurringAmount(rule, state.ledger.accounts.find { it.id == rule.accountId }, budget.currency, vm)
+                Text(rule.frequency.label(), style = MaterialTheme.typography.bodySmall)
                 Text(when {
                     !rule.active -> "Paused"
                     due == null -> "Completed"
@@ -306,6 +307,9 @@ private fun PortabilitySettings(state: LedgerState, vm: LedgerViewModel) {
                 } else if (selected == null) {
                     Text("${file.count} transactions · ${file.archive.budgets.size} local budget(s)")
                     Text("Restore the original backup structure as local budgets.")
+                    file.archive.budgets.firstNotNullOfOrNull { source ->
+                        source.entries.firstOrNull()?.let { it to source.budget.currency }
+                    }?.let { (entry, currency) -> ImportAmountPreview(entry, currency) }
                 } else if (permitted && error == null) {
                     LinearProgressIndicator(Modifier.fillMaxWidth())
                 }
@@ -325,7 +329,7 @@ private fun PortabilitySettings(state: LedgerState, vm: LedgerViewModel) {
                         !visible -> "Reconnect to the budget account to verify cloud sync."
                         queue == null -> "Checking cloud sync…"
                         queue.isEmpty() -> "Cloud import synchronized."
-                        queue.any { it.remoteVersion != null } -> "Cloud sync needs attention. Review conflicts under Cloud sync."
+                        queue.any { it.remoteVersion != null || it.failure != null } -> "Cloud sync needs attention. Review pending changes under Cloud sync."
                         else -> "${queue.size} imported changes pending cloud sync."
                     })
                     if (queue?.isNotEmpty() == true && status.text != "Up to date") Text(status.text)
@@ -378,6 +382,7 @@ private fun PortabilitySettings(state: LedgerState, vm: LedgerViewModel) {
 private fun ImportSummary(review: ImportReview, completed: Boolean) {
     Text(review.budget.name, style = MaterialTheme.typography.titleMedium)
     Text(if (completed) "${review.transactions} transactions imported" else "${review.transactions} transactions to import")
+    if (!completed) review.sample?.let { ImportAmountPreview(it, review.budget.currency) }
     Text("Accounts · ${review.accountsCreated} ${if (completed) "created" else "new"} · ${review.accountsReused} reused")
     Text("Categories · ${review.categoriesCreated} ${if (completed) "created" else "new"} · ${review.categoriesReused} reused")
     Text(if (completed) "${review.duplicates} duplicates skipped" else "${review.duplicates} duplicates to skip")
@@ -395,6 +400,16 @@ private fun ImportSummary(review: ImportReview, completed: Boolean) {
             Text(review.accounts.joinToString("\n"), style = MaterialTheme.typography.bodySmall)
             Text("Categories", style = MaterialTheme.typography.labelLarge)
             Text(review.categories.joinToString("\n"), style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+private fun ImportAmountPreview(entry: Entry, currency: String) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text("Sample transaction", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+        Column(horizontalAlignment = Alignment.End) {
+            TransactionAmountBlock(transactionAmounts(entry, currency), entry.type, currency)
         }
     }
 }

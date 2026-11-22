@@ -32,6 +32,8 @@ The root object has `version`, `budgets`, and `rates`. Version 1 stores each bud
 
 **Restore backup as local budgets** restores the original budget structure and IDs. Shared archives restore locally. Restoring the same archive skips existing transaction IDs and rule occurrences. Select a merge destination to add the records to a different budget. Restore keeps the existing version 1 format.
 
+Cross-currency entries may include an optional `bankConversion` object with the source, confirmation timestamp, and date of the bank confirmation used for a suggestion. The existing amount and rate fields carry the original, account, and budget values. Older version 1 files and historical estimate metadata remain readable. A full backup restore preserves explicit bank confirmation. A merge preserves historical confirmation and amounts and excludes the copied observation from automatic suggestions in the destination.
+
 ## CSV
 
 CSV exports one transaction per row. Fields include the transaction ID, budget name, date, type, original amount and currency, account, category, note, budget conversion metadata, and transfer destination fields.
@@ -39,3 +41,5 @@ CSV exports one transaction per row. Fields include the transaction ID, budget n
 External CSV imports use a header row and a column-mapping dialog. Map at least `date` and `amount`. Dates must use `YYYY-MM-DD`. Type may be `INCOME` or `EXPENSE`. With no type column, positive amounts are income and negative amounts are expenses. Decimal points and decimal commas inside quoted fields are accepted. Map any available `id`, `currency`, `account`, `category`, and `note` columns. Rows containing unsupported types or invalid data are reported in the preview.
 
 An external row's ID is used for duplicate detection. Without source IDs, each occurrence of an identical row in the file gets its own stable ID. Reimporting the same CSV keeps those distinct purchases without adding them again. Use JSON to carry transfers and their relationships.
+
+Use a full JSON backup to retain bank confirmation and rate-source metadata. CSV keeps its existing transaction columns.

@@ -1,6 +1,8 @@
 package dev.sharedledger.presentation
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.ui.Alignment
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -37,7 +39,8 @@ fun LedgerApp(vm: LedgerViewModel, link: android.net.Uri? = null, clearLink: () 
     val route = backStack?.destination?.route
     val snackbar = remember { SnackbarHostState() }
     var entryDetails by rememberSaveable { mutableStateOf<String?>(null) }
-    fun edit(type: EntryType, id: String = "new", duplicate: Boolean = false) = nav.navigate("entry/${type.name}/$id/$duplicate")
+    fun edit(type: EntryType, id: String = "new", duplicate: Boolean = false, feeAccount: String? = null) =
+        nav.navigate("entry/${type.name}/$id/$duplicate" + (feeAccount?.let { "?feeAccount=$it" } ?: ""))
     fun go(tab: String) = nav.navigate(tab) {
         popUpTo(nav.graph.findStartDestination().id) { saveState = true }
         launchSingleTop = true
@@ -105,13 +108,14 @@ fun LedgerApp(vm: LedgerViewModel, link: android.net.Uri? = null, clearLink: () 
                         CloudSettings(state, vm) { go("home") }
                     }
                 }
-                composable("entry/{type}/{id}/{duplicate}",
-                    arguments = listOf(navArgument("duplicate") { type = NavType.BoolType })) { back ->
+                composable("entry/{type}/{id}/{duplicate}?feeAccount={feeAccount}",
+                    arguments = listOf(navArgument("duplicate") { type = NavType.BoolType },
+                        navArgument("feeAccount") { type = NavType.StringType; nullable = true; defaultValue = null })) { back ->
                     val type = EntryType.valueOf(back.arguments!!.getString("type")!!)
                     val id = back.arguments!!.getString("id")
                     val existing = state.ledger.entries.find { it.id == id }
                     if (id == "new" || existing != null) {
-                        EditorScreen(state, vm, type, existing, back.arguments!!.getBoolean("duplicate")) { nav.popBackStack() }
+                        EditorScreen(state, vm, type, existing, back.arguments!!.getBoolean("duplicate"), back.arguments?.getString("feeAccount")) { nav.popBackStack() }
                     } else Panel { EmptyMessage("Transaction unavailable", "Return to history to review available transactions.") }
                 }
             }
@@ -125,13 +129,20 @@ fun LedgerApp(vm: LedgerViewModel, link: android.net.Uri? = null, clearLink: () 
             onDismissRequest = { entryDetails = null },
             title = { Text(state.ledger.categories.find { it.id == item.categoryId }?.name ?: "Transfer") },
             text = {
-                Column {
-                    EntryRow(item, state.ledger)
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    val currency = state.budget?.currency ?: item.budgetCurrency
+                    EntryRow(item, state.ledger, currency)
                     if (item.note.isNotBlank()) Text(item.note)
-                    RecordedExchangeRates(item)
+                    RecordedExchangeRates(item, currency)
                     item.destinationAmount?.let { Text("Received ${money(it.decimal(), item.destinationCurrency!!)}") }
                     item.transferRate?.let { Text("Transfer rate $it") }
                     state.ledger.members.find { it.userId == item.creator }?.let { Text("Created by ${it.name}") }
+                    if (state.budget?.role != Role.VIEWER && item.currency != item.accountCurrency &&
+                        state.ledger.accounts.any { it.id == item.accountId && !it.archived }) {
+                        TextButton({ entryDetails = null; edit(EntryType.EXPENSE, feeAccount = item.accountId) }) {
+                            Text("Record separate bank fee")
+                        }
+                    }
                 }
             },
             confirmButton = {

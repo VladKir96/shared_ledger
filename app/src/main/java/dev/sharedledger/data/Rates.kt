@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.Serializable
 import java.math.BigDecimal
 import java.math.MathContext
 import java.time.LocalDate
@@ -18,6 +19,7 @@ import javax.inject.Singleton
 
 val ledgerJson = Json { ignoreUnknownKeys = true; encodeDefaults = true; explicitNulls = true }
 
+@Serializable
 data class RateQuote(val value: String, val date: String, val source: String) {
     fun convert(amount: BigDecimal, target: String) = amount.multiply(value.decimal()).forCurrency(target).storage()
 }

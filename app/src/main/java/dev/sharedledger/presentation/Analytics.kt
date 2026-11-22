@@ -28,11 +28,12 @@ import java.time.YearMonth
 import java.time.format.TextStyle
 import java.time.temporal.ChronoUnit
 
-private data class Point(val label: String, val a: BigDecimal, val b: BigDecimal = BigDecimal.ZERO)
+private data class Point(val label: String, val a: BigDecimal, val b: BigDecimal = BigDecimal.ZERO,
+                         val approximateA: Boolean = false, val approximateB: Boolean = false)
 private data class Report(
     val trends: List<Point>, val months: List<Point>, val memberSpend: List<Point>, val accountSpend: List<Point>,
     val balances: List<Point>, val categoryHistory: List<Point>, val averageDay: BigDecimal, val averageMonth: BigDecimal,
-    val largest: Entry?, val largestCategory: String?, val difference: BigDecimal?
+    val largest: Entry?, val largestCategory: String?, val difference: BigDecimal?, val approximateDifference: Boolean
 )
 
 @Composable
@@ -58,7 +59,8 @@ fun AnalyticsScreen(state: LedgerState, vm: LedgerViewModel, drill: (EntryType, 
             val bucketDays = ((days + 19) / 20).coerceAtLeast(1)
             val daily = entries.groupBy { ChronoUnit.DAYS.between(from, LocalDate.parse(it.date)) / bucketDays }
             val trends = (0L until (days + bucketDays - 1) / bucketDays).map { index ->
-                Point(from.plusDays(index * bucketDays).shortDate(), totals(daily[index].orEmpty(), currency).expenses)
+                val sums = totals(daily[index].orEmpty(), currency)
+                Point(from.plusDays(index * bucketDays).shortDate(), sums.expenses, approximateA = sums.approximateExpenses)
             }
             val firstMonth = YearMonth.from(from)
             val monthSize = ((months + 23) / 24).coerceAtLeast(1)
@@ -74,10 +76,11 @@ fun AnalyticsScreen(state: LedgerState, vm: LedgerViewModel, drill: (EntryType, 
             }
             val bars = buckets.map { (index, start, end) ->
                 val sums = totals(monthGroups[index].orEmpty(), currency)
-                Point(monthLabel(start, end), sums.income, sums.expenses)
+                Point(monthLabel(start, end), sums.income, sums.expenses, sums.approximateIncome, sums.approximateExpenses)
             }
             val history = buckets.map { (index, start, end) ->
-                Point(monthLabel(start, end), totals(monthGroups[index].orEmpty().filter { it.categoryId == categoryId }, currency).expenses)
+                val sums = totals(monthGroups[index].orEmpty().filter { it.categoryId == categoryId }, currency)
+                Point(monthLabel(start, end), sums.expenses, approximateA = sums.approximateExpenses)
             }
             val account = accounts.find { it.id == accountId }
             val balance = if (account == null) emptyList() else buckets.map { (_, start, end) ->
@@ -87,13 +90,21 @@ fun AnalyticsScreen(state: LedgerState, vm: LedgerViewModel, drill: (EntryType, 
             val delta = if (state.period.mode == PeriodMode.ALL || past.expenses.signum() == 0 ||
                 past.pending > 0 || state.totals.pending > 0) null else
                 state.totals.expenses.subtract(past.expenses).divide(past.expenses, MathContext.DECIMAL64).movePointRight(2)
-            Report(trends, bars, spendingBy(entries, currency) { it.payer }.map { (key, sum) -> Point(members[key] ?: "Unassigned", sum) },
-                spendingBy(entries, currency) { it.accountId }.map { (key, sum) -> Point(accountNames[key] ?: "Account", sum) },
+            val memberEstimates = estimatedGroups(entries, currency, EntryType.EXPENSE) { it.payer }
+            val accountEstimates = estimatedGroups(entries, currency, EntryType.EXPENSE) { it.accountId }
+            val memberSpend = spendingBy(entries, currency) { it.payer }.map { (key, sum) ->
+                Point(members[key] ?: "Unassigned", sum, approximateA = key in memberEstimates)
+            }
+            val accountSpend = spendingBy(entries, currency) { it.accountId }.map { (key, sum) ->
+                Point(accountNames[key] ?: "Account", sum, approximateA = key in accountEstimates)
+            }
+            Report(trends, bars, memberSpend, accountSpend,
                 balance, history, state.totals.expenses.divide(BigDecimal.valueOf(days), MathContext.DECIMAL64),
                 state.totals.expenses.divide(BigDecimal.valueOf(months), MathContext.DECIMAL64),
                 entries.filter { it.type == EntryType.EXPENSE && it.budgetCurrency == currency && it.budgetAmount != null }
                     .maxByOrNull { it.budgetAmount!!.decimal() },
-                spendingBy(entries, currency) { it.categoryId }.keys.firstOrNull()?.let(names::get), delta)
+                spendingBy(entries, currency) { it.categoryId }.keys.firstOrNull()?.let(names::get), delta,
+                past.approximateExpenses || state.totals.approximateExpenses)
         }
     }
     LazyColumn(contentPadding = PaddingValues(20.dp, 14.dp, 20.dp, 22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -109,17 +120,19 @@ fun AnalyticsScreen(state: LedgerState, vm: LedgerViewModel, drill: (EntryType, 
         }
         item { Panel(Modifier.fillMaxWidth()) {
             Text(tr("Period summary"), style = MaterialTheme.typography.titleLarge)
-            Measure(tr("Income"), money(state.totals.income, currency))
-            Measure(tr("Expenses"), money(state.totals.expenses, currency))
-            Measure(tr("Net cash flow"), money(state.totals.net, currency))
+            Measure(tr("Income"), valuationMoney(state.totals.income, currency, state.totals.approximateIncome))
+            Measure(tr("Expenses"), valuationMoney(state.totals.expenses, currency, state.totals.approximateExpenses))
+            Measure(tr("Net cash flow"), valuationMoney(state.totals.net, currency, state.totals.approximate))
+            if (state.totals.approximate) Text("Charts include estimated budget conversions.", style = MaterialTheme.typography.bodySmall)
             report?.let {
-                Measure(tr("Average daily expenses"), money(it.averageDay, currency))
-                Measure(tr("Average monthly expenses"), money(it.averageMonth, currency))
-                it.largest?.let { row -> Measure(tr("Largest expense"), money(row.budgetAmount!!.decimal(), currency)) }
+                Measure(tr("Average daily expenses"), valuationMoney(it.averageDay, currency, state.totals.approximateExpenses))
+                Measure(tr("Average monthly expenses"), valuationMoney(it.averageMonth, currency, state.totals.approximateExpenses))
+                it.largest?.let { row -> Measure(tr("Largest expense"), valuationMoney(row.budgetAmount!!.decimal(), currency, row.isBudgetApproximate())) }
                 it.largestCategory?.let { name -> Measure(tr("Most expensive category"), name) }
                 it.difference?.let { value ->
                     val percent = java.text.NumberFormat.getNumberInstance().apply { maximumFractionDigits = 1 }.format(value)
-                    Measure(tr("Change versus previous period"), (if (value.signum() > 0) "+" else "") + "$percent%")
+                    Measure(tr("Change versus previous period"), (if (it.approximateDifference) "≈ " else "") +
+                        (if (value.signum() > 0) "+" else "") + "$percent%")
                 }
             }
             if (state.totals.pending > 0) Text("Partial totals · ${state.totals.pending} missing conversions", color = MaterialTheme.colorScheme.error)
@@ -164,7 +177,7 @@ private fun Ranked(title: String, points: List<Point>, currency: String) {
         if (points.isEmpty()) Text("No spending in this period.")
         val max = points.maxOfOrNull { it.a }?.takeIf { it.signum() > 0 } ?: BigDecimal.ONE
         points.forEach {
-            Measure(it.label, money(it.a, currency))
+            Measure(it.label, valuationMoney(it.a, currency, it.approximateA))
             LinearProgressIndicator(progress = { normalized(it.a, max) }, modifier = Modifier.fillMaxWidth())
         }
     }
@@ -184,6 +197,8 @@ private fun Chart(points: List<Point>, currency: String, comparisons: Boolean) {
     if (points.isEmpty()) { EmptyMessage("No chart data", "Record transactions to see this report.", Icons.Outlined.BarChart); return }
     var index by remember(points) { mutableIntStateOf(points.lastIndex) }
     val selected = points[index]
+    val selectedAmount = valuationMoney(selected.a, currency, selected.approximateA) +
+        if (comparisons) " / ${valuationMoney(selected.b, currency, selected.approximateB)}" else ""
     val high = maxOf(BigDecimal.ZERO, points.maxOf { maxOf(it.a, it.b) })
     val low = minOf(BigDecimal.ZERO, points.minOf { minOf(it.a, it.b) })
     val magnitude = (high - low).takeIf { it.signum() > 0 } ?: BigDecimal.ONE
@@ -191,7 +206,7 @@ private fun Chart(points: List<Point>, currency: String, comparisons: Boolean) {
     val expense = MaterialTheme.colorScheme.error
     val grid = MaterialTheme.colorScheme.outlineVariant
     Canvas(Modifier.fillMaxWidth().height(124.dp).semantics {
-        contentDescription = "${selected.label}, ${money(selected.a, currency)}"
+        contentDescription = "${selected.label}, $selectedAmount"
     }.pointerInput(points) {
         detectTapGestures { pos -> index = ((pos.x / size.width) * points.size).toInt().coerceIn(points.indices) }
     }) {
@@ -216,7 +231,7 @@ private fun Chart(points: List<Point>, currency: String, comparisons: Boolean) {
             }
         }
     }
-    Measure(selected.label, money(selected.a, currency) + if (comparisons) " / ${money(selected.b, currency)}" else "")
+    Measure(selected.label, selectedAmount)
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         TextButton({ index-- }, enabled = index > 0) { Text(tr("Previous point")) }
         TextButton({ index++ }, enabled = index < points.lastIndex) { Text(tr("Next point")) }

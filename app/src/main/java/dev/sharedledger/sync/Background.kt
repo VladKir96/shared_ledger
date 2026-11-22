@@ -117,7 +117,9 @@ class Background @Inject constructor(
         scope.launch { signals.debounce(1_000).collect { enqueueSync(context) } }
         scope.launch {
             combine(repository.dao.pendingFlow(), auth.session.map { it?.userId }.distinctUntilChanged()) { list, user ->
-                if (user == null) emptySet() else list.filter { it.remoteVersion == null }.mapTo(hashSetOf()) { it.operationId }
+                if (user == null) emptySet() else list.filter {
+                    it.principal == user && it.failure == null && (it.remoteVersion == null || it.deletesEntry())
+                }.mapTo(hashSetOf()) { it.operationId }
             }.distinctUntilChanged().debounce(500).collect { if (it.isNotEmpty()) enqueueSync(context) }
         }
         scope.launch {

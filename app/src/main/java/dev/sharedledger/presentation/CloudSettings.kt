@@ -19,9 +19,14 @@ import androidx.compose.ui.unit.dp
 import dev.sharedledger.data.*
 import dev.sharedledger.domain.*
 import dev.sharedledger.sync.Invitation
+import dev.sharedledger.sync.failureMessage
+import dev.sharedledger.sync.failureTitle
 import dev.sharedledger.sync.string
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.withContext
+import java.text.DateFormat
+import java.util.Date
 
 @Composable
 fun CloudSettings(state: LedgerState, vm: LedgerViewModel, onBudgetJoined: () -> Unit) {
@@ -30,9 +35,13 @@ fun CloudSettings(state: LedgerState, vm: LedgerViewModel, onBudgetJoined: () ->
     val joining by vm.joiningInvitation.collectAsState()
     val status by vm.sync.status.collectAsState()
     val changes by vm.repository.dao.pendingFlow().collectAsState(initial = emptyList())
-    val scopedChanges = changes.filter { change -> state.budgets.any { it.id == change.budgetId && it.principal == session?.userId } }
-    val pending = scopedChanges.filter { it.remoteVersion == null }
-    val conflicts = scopedChanges.filter { it.remoteVersion != null }
+    val principal = session?.userId
+    val scopedChanges = changes.filter { principal != null && it.principal == principal }
+    val failures = scopedChanges.filter { it.failure != null }
+    val conflicts = scopedChanges.filter { it.remoteVersion != null && it.failure == null }
+    val lastSync by remember(principal) {
+        principal?.let(vm.repository.dao::lastSyncFlow) ?: flowOf(null)
+    }.collectAsState(initial = null)
     val budget = state.budget
     val context = LocalContext.current
     var signingUp by rememberSaveable { mutableStateOf(false) }
@@ -108,10 +117,14 @@ fun CloudSettings(state: LedgerState, vm: LedgerViewModel, onBudgetJoined: () ->
             item {
                 Panel(Modifier.fillMaxWidth()) {
                     Text(session?.email.orEmpty(), style = MaterialTheme.typography.titleMedium)
-                    Text(status.text)
-                    Text("${pending.size} queued · ${conflicts.size} conflicts")
+                    Text(if (status.text == "Up to date" && scopedChanges.isNotEmpty()) "Changes pending" else status.text)
+                    Text("${scopedChanges.size} pending · ${failures.size} failed · ${conflicts.size} conflicts")
+                    Text(lastSync?.let { "Last successful sync · ${DateFormat.getDateTimeInstance().format(Date(it))}" }
+                        ?: "Last successful sync hasn’t been recorded")
                     Row {
-                        TextButton({ vm.execute { vm.sync.synchronize() } }, enabled = !status.running) { Text(tr("Sync now")) }
+                        TextButton({ vm.execute { vm.sync.synchronize(retryFailed = true) } }, enabled = !status.running) {
+                            Text(if (failures.isEmpty()) tr("Sync now") else "Retry sync")
+                        }
                         TextButton({ switching = true }) { Text(tr("Sign out")) }
                         TextButton({ deleting = true }) { Text(tr("Delete account")) }
                     }
@@ -176,6 +189,14 @@ fun CloudSettings(state: LedgerState, vm: LedgerViewModel, onBudgetJoined: () ->
                             }
                         }
                     }
+                }
+            }
+            if (failures.isNotEmpty()) item { Text("Failed changes", style = MaterialTheme.typography.titleLarge) }
+            items(failures, key = { "failed-${it.kind}-${it.recordId}" }) { change ->
+                Panel(Modifier.fillMaxWidth()) {
+                    Text(change.failureTitle(), style = MaterialTheme.typography.titleMedium)
+                    Text(state.budgets.find { it.id == change.budgetId }?.name ?: "Budget unavailable")
+                    Text(change.failureMessage())
                 }
             }
             if (conflicts.isNotEmpty()) item { Text(tr("Conflicts"), style = MaterialTheme.typography.titleLarge) }

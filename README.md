@@ -78,6 +78,16 @@ Look for version `202611210001`. Existing unexpired, unused invitation codes sti
 
 Use **Settings → Import and export** to merge JSON or CSV into a writable budget. The preview shows reused and new accounts and categories, and keeps the destination's existing history. Shared owners and editors can merge; viewers stay read-only. Deploy Supabase migration `202611210002` before syncing cloud imports. Use **Restore backup as local budgets** to recover the original archive structure. [Import and restore guide](docs/files.md)
 
+## Record an actual bank conversion
+
+When the transaction currency differs from the account currency, enter the original amount and edit the suggested debit or credit to match your bank statement. Select **Confirm actual bank amount** before saving. SharedLedger uses the latest confirmed rate for that account, currency pair, and direction on subsequent transactions. A backdated entry can use only rates from transactions on or before its date. The first conversion uses the applicable reference quote when available.
+
+History shows the budget amount first, followed by distinct account and original amounts. **≈** marks estimated budget valuations. **Settings → Exchange rates** shows the latest confirmation and its date. [Bank conversion guide](docs/setup-guide.md#recording-bank-conversions)
+
+## Sync transaction deletions
+
+Deleting an entry hides it immediately and queues the deletion. Supabase records a tombstone using the saved server amounts and relationships, and other devices hide the entry when they sync. Deploy pending database migrations through `202611220001` before syncing with this APK. Open **Settings → Cloud sync** to check pending and failed changes or select **Retry sync** after fixing a reported problem. [Database migration steps](docs/setup-guide.md#5-apply-and-verify-the-database-migrations) · [Deletion diagnostics and two-device checks](docs/verification.md#transaction-deletion-and-sync-recovery)
+
 ## Build artifacts and tests
 
 | Build | Command from the repository root | Output |

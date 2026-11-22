@@ -97,6 +97,7 @@ class Portability @Inject constructor(private val repo: LedgerRepository) {
         val occurrences = mutableSetOf<Pair<String, String>>()
         value.entries.forEach { entry ->
             entry.id.requireId(); entry.currency.validCurrency(); entry.budgetCurrency.validCurrency(); entry.accountCurrency.validCurrency()
+            entry.validateBankConversion()
             val date = LocalDate.parse(entry.date)
             val amount = parseMoney(entry.amount)
             require(entry.budgetId == budget.id && accounts[entry.accountId]?.currency == entry.accountCurrency &&

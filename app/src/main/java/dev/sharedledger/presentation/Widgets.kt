@@ -24,6 +24,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -140,13 +141,14 @@ fun PeriodControl(period: Period, onPeriod: (Period) -> Unit, extended: Boolean 
     )
 }
 
-data class Slice(val id: String?, val name: String, val color: Long, val icon: String, val amount: BigDecimal)
+data class Slice(val id: String?, val name: String, val color: Long, val icon: String, val amount: BigDecimal, val approximate: Boolean)
 
 fun slices(entries: List<Entry>, currency: String, type: EntryType, categories: List<Category>): List<Slice> {
     val index = categories.associateBy { it.id }
+    val approximations = estimatedGroups(entries, currency, type) { it.categoryId }
     return spendingBy(entries, currency, type) { it.categoryId }.filterValues { it.signum() > 0 }.map { (key, amount) ->
         val category = index[key]
-        Slice(key, category?.name ?: "Uncategorized", category?.color ?: 0xFF82968A, category?.icon ?: "more", amount)
+        Slice(key, category?.name ?: "Uncategorized", category?.color ?: 0xFF82968A, category?.icon ?: "more", amount, key in approximations)
     }
 }
 
@@ -158,10 +160,14 @@ fun Distribution(entries: List<Entry>, currency: String, categories: List<Catego
         value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { slices(entries, currency, type, categories) }
     }
     val pieces = remember(groups) {
-        if (groups.size <= 6) groups else groups.take(5) + Slice("other", "Other categories", 0xFF82968A, "more",
-            groups.drop(5).fold(BigDecimal.ZERO) { sum, slice -> sum + slice.amount })
+        if (groups.size <= 6) groups else {
+            val remaining = groups.drop(5)
+            groups.take(5) + Slice("other", "Other categories", 0xFF82968A, "more",
+                remaining.fold(BigDecimal.ZERO) { sum, slice -> sum + slice.amount }, remaining.any { it.approximate })
+        }
     }
     val total = pieces.fold(BigDecimal.ZERO) { sum, slice -> sum + slice.amount }
+    val approximateTotal = pieces.any { it.approximate }
     val weights = remember(pieces, total) {
         pieces.map { it.amount.divide(total, MathContext.DECIMAL64).toFloat() }
     }
@@ -177,7 +183,7 @@ fun Distribution(entries: List<Entry>, currency: String, categories: List<Catego
             FilterChip(type == EntryType.INCOME, { type = EntryType.INCOME }, { Text(tr("Income")) })
         }
         Box(Modifier.fillMaxWidth().height(156.dp), contentAlignment = Alignment.Center) {
-            Canvas(Modifier.size(154.dp).semantics { contentDescription = "Distribution chart, ${money(total, currency)}" }
+            Canvas(Modifier.size(154.dp).semantics { contentDescription = "Distribution chart, ${valuationMoney(total, currency, approximateTotal)}" }
                 .pointerInput(pieces) {
                     detectTapGestures { point ->
                         val x = point.x - size.width / 2f
@@ -207,7 +213,8 @@ fun Distribution(entries: List<Entry>, currency: String, categories: List<Catego
             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(132.dp)) {
                 Text(selected?.name ?: tr(if (type == EntryType.EXPENSE) "Total expenses" else "Total income"),
                     style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(money(selected?.amount ?: total, currency), style = MaterialTheme.typography.titleMedium, maxLines = 1,
+                Text(valuationMoney(selected?.amount ?: total, currency, selected?.approximate ?: approximateTotal),
+                    style = MaterialTheme.typography.titleMedium, maxLines = 1,
                     overflow = TextOverflow.Ellipsis)
             }
         }
@@ -227,7 +234,7 @@ fun Distribution(entries: List<Entry>, currency: String, categories: List<Catego
                     groups.drop(5).forEach { group ->
                         TextButton({ onDrill(type, group.id) }, Modifier.fillMaxWidth()) {
                             Text(group.name, Modifier.weight(1f))
-                            Text(money(group.amount, currency))
+                            Text(valuationMoney(group.amount, currency, group.approximate))
                         }
                     }
                 } else TextButton({ onDrill(type, slice.id) }, Modifier.align(Alignment.End)) { Text(tr("View transactions")) }
@@ -237,7 +244,7 @@ fun Distribution(entries: List<Entry>, currency: String, categories: List<Catego
 }
 
 @Composable
-fun EntryRow(entry: Entry, ledger: Ledger, onClick: (() -> Unit)? = null) {
+fun EntryRow(entry: Entry, ledger: Ledger, budgetCurrency: String = entry.budgetCurrency, onClick: (() -> Unit)? = null) {
     val category = ledger.categories.find { it.id == entry.categoryId }
     val account = ledger.accounts.find { it.id == entry.accountId }
     val dest = ledger.accounts.find { it.id == entry.destinationId }
@@ -253,14 +260,32 @@ fun EntryRow(entry: Entry, ledger: Ledger, onClick: (() -> Unit)? = null) {
             Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Column(horizontalAlignment = Alignment.End) {
-            val sign = if (isTransfer) "" else if (entry.type == EntryType.INCOME) "+" else "−"
-            val tint = if (isTransfer) MaterialTheme.colorScheme.onSurface else if (entry.type == EntryType.INCOME)
-                MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
-            Text(sign + money(entry.amount.decimal(), entry.currency), color = tint, style = MaterialTheme.typography.labelLarge)
+            val amounts = transactionAmounts(entry, budgetCurrency)
+            TransactionAmountBlock(amounts, entry.type, budgetCurrency)
             Text(LocalDate.parse(entry.date).shortDate(), style = MaterialTheme.typography.labelSmall)
-            if (!isTransfer && (entry.budgetAmount == null || entry.accountAmount == null)) {
-                Text(tr("Conversion pending"), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
+            if (!isTransfer && entry.accountAmount == null && amounts.primary != null) {
+                Text("Account conversion pending", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
             }
         }
     }
 }
+
+@Composable
+fun TransactionAmountBlock(amounts: TransactionAmounts, type: EntryType, budget: String) {
+    val sign = when (type) { EntryType.EXPENSE -> "−"; EntryType.INCOME -> "+"; EntryType.TRANSFER -> "" }
+    val color = when (type) {
+        EntryType.EXPENSE -> MaterialTheme.colorScheme.error
+        EntryType.INCOME -> MaterialTheme.colorScheme.primary
+        EntryType.TRANSFER -> MaterialTheme.colorScheme.onSurface
+    }
+    val primary = amounts.primary
+    Text(primary?.let { (if (it.approximate) "≈ " else "") + sign + money(it.value, it.currency) } ?: "$budget · Pending",
+        color = color, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.End)
+    if (amounts.secondary.isNotEmpty()) {
+        Text(amounts.secondary.joinToString(" · ") { (if (it.approximate) "≈ " else "") + sign + money(it.value, it.currency) },
+            color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End)
+    }
+}
+
+fun valuationMoney(value: BigDecimal, currency: String, approximate: Boolean) =
+    (if (approximate) "≈ " else "") + money(value, currency)

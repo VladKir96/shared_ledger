@@ -12,6 +12,9 @@ For hosted setup instructions, see the [complete setup guide](setup-guide.md). T
 ```sh
 psql 'postgresql://postgres:postgres@127.0.0.1:54322/postgres' -v ON_ERROR_STOP=1 -f supabase/tests/ledger.sql
 psql 'postgresql://postgres:postgres@127.0.0.1:54322/postgres' -v ON_ERROR_STOP=1 -f supabase/tests/invitations.sql
+psql 'postgresql://postgres:postgres@127.0.0.1:54322/postgres' -v ON_ERROR_STOP=1 -f supabase/tests/import_merge.sql
+psql 'postgresql://postgres:postgres@127.0.0.1:54322/postgres' -v ON_ERROR_STOP=1 -f supabase/tests/bank_conversion.sql
+psql 'postgresql://postgres:postgres@127.0.0.1:54322/postgres' -v ON_ERROR_STOP=1 -f supabase/tests/transaction_tombstones.sql
 ```
 
 The SQL uses fixed test identities inside a transaction and rolls back. It validates invitation redemption, direct RLS access, editor and viewer authorization, retries, conflict versions, and revocation. It does not require an Android client.
@@ -40,6 +43,53 @@ The migration and test environments leave existing hosted data intact. The migra
 
 An upgrade fixture reproduced the legacy rejection of a pasted Share message and redeemed the same pre-migration code after applying the fix. A separate local smoke test used two authenticated WebSocket sessions and the publishable key. Both sessions received a budget-change event from the other user's expense, fetched matching snapshots, and calculated a total of 150 RSD.
 
+## Bank conversion verification
+
+The JVM tests cover exact decimal and reciprocal rates, dated reference fallback, and choosing by transaction date and confirmation time. The Room and editor tests record and correct successive RSD purchases and RUB income on a USD account. They verify that official rate changes leave confirmed values intact and that deleting the latest confirmation falls back to the preceding eligible transaction. JSON backup and the Room 4 to 5 migration continue to preserve historical fields.
+
+## Transaction deletion and sync recovery
+
+The linked hosted schema was inspected with read-only queries. The live `ledger_apply` body matched the original migration. The hosted project had versions through `202611210001` and no user-defined transaction trigger at the time of inspection. Its transaction columns use a default of 1 for `version`, and `deleted_at` is nullable.
+
+Use these read-only queries in the SQL editor to verify the deployed constraint and the table’s other constraints.
+
+```sql
+SELECT
+    conname,
+    pg_get_constraintdef(oid) AS definition
+FROM pg_constraint
+WHERE conrelid = 'public.transactions'::regclass
+  AND conname = 'transactions_check2';
+
+SELECT
+    conname,
+    contype,
+    pg_get_constraintdef(oid) AS definition
+FROM pg_constraint
+WHERE conrelid = 'public.transactions'::regclass
+ORDER BY conname;
+```
+
+`transactions_check2` requires `account_amount`, `account_rate`, `account_rate_date`, and `account_rate_source` to be either all NULL or all non-NULL. The deployed field-name transform produced `accountRatedate` and `accountRatesource` instead of `accountRateDate` and `accountRateSource`. The transform produced the same casing error for the budget rate date and source. A read-only synthetic query on the hosted database reproduced all four names. Older Android builds ignored the unrecognized properties, so a downloaded row kept its amount and rate and lost its date and source in Room.
+
+Deleting that downloaded row set `deletedAt` and queued a full upsert. PostgreSQL checked the proposed `INSERT … ON CONFLICT DO UPDATE` row and rejected the partial account fields with SQLSTATE `23514` before it could update the existing row. Local PostgreSQL reproduced that failure. The phone’s stored outbox was outside this verification.
+
+Migration `202611220001` normalizes each word of a field name and updates only deletion and sync metadata when deleting an existing transaction. An incomplete active write still fails the same CHECK. The APK accepts both spellings and refreshes previously cached cloud snapshots on upgrade. SQL tests cover all transaction types, imported and recurring entries, duplicate deletes, viewer permissions, and concurrent edit/delete ordering. The Android tests check preservation of stuck operations across a Room migration and restart, offline visibility, permanent failure quarantine, dependency ordering, retry, and convergence of two separately authenticated Room stores. Developer diagnostics can use `adb logcat -s SharedLedgerSync` to see the operation type, sanitized SQLSTATE and constraint name. The application UI shows a recovery message and the pending and failed counts.
+
+The signed debug build passed 32 JVM tests and 30 instrumented tests on a fresh Android 15 emulator. Lint reported zero errors and five warnings. Five local SQL suites passed.
+
+Two Android 15 emulators signed in as an owner and an editor against the disposable local Supabase stack. The owner queued deletions offline and closed the test process. The editor queued an offline edit while it still had the original rows. Both clients pulled the same tombstones on reconnection, cleared their outboxes, and restored account and budget totals. The test covered a confirmed purchase with missing local rate metadata, income, a transfer, an imported transaction, and a recurring occurrence. The recurring rule stayed active.
+
+### Verify deletion on two phones
+
+1. Apply the pending migrations to a test Supabase project and install the APK over the existing app. Sign in as an owner on phone A and as an editor in the same test budget on phone B.
+2. On phone A, record a same-currency expense and income, a transfer, and an RSD purchase with a confirmed USD debit. Sync both phones and compare the accounts and budget totals.
+3. Put A offline, delete the transactions, and reopen the app. The deletions should still be hidden and listed as pending, while B should still show the original records.
+4. On B, edit the note of one of those entries while offline. Reconnect A and select **Sync now**, then reconnect B and sync. Both phones should hide the entries and show the same corrected account balances and totals. A new bank transaction should use the preceding confirmed rate or the applicable reference rate.
+5. On a device with a previously stuck deletion, install the APK and sync after deploying the migration. If the new build previously flagged it as failed, choose **Retry sync**. Confirm the pending and failed counts clear after the server accepts the deletion.
+
+Hosted write and physical-device tests require a test project and signed-in devices. [Deploy the migrations](setup-guide.md#5-apply-and-verify-the-database-migrations)
+
 ## Deployed project acceptance
 
 Use two separate confirmed accounts on two Android devices connected to the same test project.
@@ -51,6 +101,7 @@ Use two separate confirmed accounts on two Android devices connected to the same
 5. Make conflicting edits while both devices are offline, reconnect, and select the desired version in Cloud sync. Verify the final version on both devices.
 6. Revoke access from the owner device. After the other device syncs, verify the budget is removed from its ledger and direct requests are denied. Sign in with another account on the same device and verify account isolation.
 7. Export a budget to JSON, restore it into a clean installation, then import it again. Verify relationships and check the duplicate count.
+8. In an RSD shared budget, record 2,500 RSD on a USD account and confirm an actual 21.50 USD debit. From the other device, verify both amounts and **Bank actual · Confirmed**. Edit the note and sync. Both devices should still show the same amounts and rates. Start another RSD expense and check the suggested debit.
 
 A cloud-configured debug APK was also clean-built and signature-verified. The embedded public configuration matched the local properties file, and the configured Auth settings endpoint returned HTTP 200. That check validates gateway access. Complete the [two-device walkthrough](setup-guide.md#11-create-and-join-a-shared-budget) on your own project to verify sign-in, sync, and Realtime. Independently test hosted confirmation and recovery email delivery and the deployed Edge Function using disposable accounts.
 

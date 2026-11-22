@@ -5,7 +5,9 @@ import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
 import dev.sharedledger.domain.*
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNames
 
 interface LedgerRecord {
     val id: String
@@ -64,6 +66,7 @@ data class Category(
     override val deletedAt: Long? = null
 ) : LedgerRecord
 
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 @Entity(
     tableName = "entries",
@@ -89,11 +92,11 @@ data class Entry(
     val accountAmount: String? = null,
     val budgetAmount: String? = null,
     val accountRate: String? = null,
-    val accountRateDate: String? = null,
-    val accountRateSource: String? = null,
+    @JsonNames("accountRatedate") val accountRateDate: String? = null,
+    @JsonNames("accountRatesource") val accountRateSource: String? = null,
     val budgetRate: String? = null,
-    val budgetRateDate: String? = null,
-    val budgetRateSource: String? = null,
+    @JsonNames("budgetRatedate") val budgetRateDate: String? = null,
+    @JsonNames("budgetRatesource") val budgetRateSource: String? = null,
     val note: String = "",
     val creator: String? = null,
     val payer: String? = null,
@@ -104,7 +107,8 @@ data class Entry(
     val ruleId: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
     override val updatedAt: Long = createdAt,
-    override val deletedAt: Long? = null
+    override val deletedAt: Long? = null,
+    val bankConversion: BankConversion? = null
 ) : LedgerRecord
 
 @Serializable
@@ -184,8 +188,14 @@ data class Preferences(
     val theme: ThemeMode = ThemeMode.SYSTEM,
     val dynamicColor: Boolean = false,
     val defaultCurrency: String = "RSD",
-    @androidx.room.ColumnInfo(defaultValue = "1") val automaticRates: Boolean = true
+    @androidx.room.ColumnInfo(defaultValue = "1") val automaticRates: Boolean = true,
+    @androidx.room.ColumnInfo(defaultValue = "1") val smartBankRates: Boolean = true
 )
+
+@Entity(tableName = "bank_learning_resets", primaryKeys = ["accountId", "currency", "accountCurrency", "direction"],
+    foreignKeys = [ForeignKey(entity = Account::class, parentColumns = ["id"], childColumns = ["accountId"], onDelete = ForeignKey.CASCADE)])
+data class BankLearningReset(val accountId: String, val currency: String, val accountCurrency: String,
+                             val direction: EntryType, val resetAt: Long)
 
 @Serializable
 @Entity(tableName = "outbox", primaryKeys = ["kind", "recordId"], indices = [Index("budgetId")])
@@ -199,8 +209,13 @@ data class PendingChange(
     val remoteVersion: Long? = null,
     val remoteBody: String? = null,
     @androidx.room.ColumnInfo(defaultValue = "0") val rateOnly: Boolean = false,
-    @androidx.room.ColumnInfo(defaultValue = "0") val imported: Boolean = false
+    @androidx.room.ColumnInfo(defaultValue = "0") val imported: Boolean = false,
+    val principal: String? = null,
+    val failure: String? = null
 )
+
+@Entity(tableName = "sync_checkpoints")
+data class SyncCheckpoint(@PrimaryKey val principal: String, val syncedAt: Long)
 
 @Entity(tableName = "import_links", primaryKeys = ["budgetId", "sourceBudgetId", "kind", "sourceId"], foreignKeys = [
     ForeignKey(entity = Budget::class, parentColumns = ["id"], childColumns = ["budgetId"], onDelete = ForeignKey.CASCADE)

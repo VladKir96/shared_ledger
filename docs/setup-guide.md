@@ -181,8 +181,10 @@ A migration is a versioned SQL file that creates or updates the PostgreSQL schem
 | [`202611200002_api.sql`](../supabase/migrations/202611200002_api.sql) | Database functions for budget snapshots and writes, version checks, invitations, and membership changes |
 | [`202611210001_invitation_redemption.sql`](../supabase/migrations/202611210001_invitation_redemption.sql) | Authenticated invitation creation and redemption, specific error codes, and receipts for safe retries |
 | [`202611210002_budget_import.sql`](../supabase/migrations/202611210002_budget_import.sql) | Create-only shared import batches for owners and editors |
+| [`202611210003_bank_conversion.sql`](../supabase/migrations/202611210003_bank_conversion.sql) | Optional bank conversion metadata and protection for confirmed amounts during older-client edits |
+| [`202611220001_transaction_tombstones.sql`](../supabase/migrations/202611220001_transaction_tombstones.sql) | Canonical exchange-rate field names and versioned deletion that preserves server-side values |
 
-1. From the repository root, preview the hosted migration and inspect the `Target:` line. It must identify your linked test project. On a fresh project, the preview should list all four files above. If you already deployed invitation redemption, the only pending file should be `202611210002_budget_import.sql`. A fully updated project can report that there is nothing to push.
+1. From the repository root, preview the hosted migrations and check that the `Target` line names the intended project. A fresh project should list all six files above. If you already deployed bank conversion metadata, only `202611220001_transaction_tombstones.sql` should be pending.
 
    ```sh
    supabase db push --dry-run --remote
@@ -195,7 +197,7 @@ A migration is a versioned SQL file that creates or updates the PostgreSQL schem
    supabase migration list --remote
    ```
 
-3. Check that migration versions `202611200001`, `202611200002`, `202611210001`, and `202611210002` appear in both the **Local** and **Remote** columns. In the Supabase Dashboard for that project, open **Table Editor**, select the **public** schema, and look for `profiles`, `budgets`, `budget_memberships`, `accounts`, `categories`, `transactions`, `recurring_rules`, `exchange_rate_cache`, and `invitations`. Empty tables are expected before users and budgets are created.
+3. Check that all six migration versions through `202611220001` appear in both the **Local** and **Remote** columns. In the Supabase Dashboard for that project, open **Table Editor**, select the **public** schema, and look for `profiles`, `budgets`, `budget_memberships`, `accounts`, `categories`, `transactions`, `recurring_rules`, `exchange_rate_cache`, and `invitations`. Empty tables are expected before users and budgets are created.
 
 ### If the CLI tries to connect to `127.0.0.1:54322`
 
@@ -461,6 +463,26 @@ where m.budget_id = 'YOUR_BUDGET_UUID'::uuid and m.user_id = 'USER_B_UUID'::uuid
 ```
 
 Look for one active membership with the intended role and a confirmation timestamp. The timestamp verifies email confirmation. A separate sign-in or refresh check verifies the Android session. The owner can check the invitation's expiry, revocation, and use count in **Cloud sync** or **Table Editor → invitations**. The database stores the code as a hash.
+
+### Recording bank conversions
+
+1. Add an expense or income. Select the account and then the original transaction currency. A USD account and an RSD purchase open the two-amount editor.
+2. Enter the original amount with the keyboard or calculator. The editor uses the last confirmed rate for that account, pair, and direction. If none applies, it can use a reference quote or dated cache. Enter the figure from your bank and select **Confirm actual bank amount**.
+3. For 2,500 RSD and a debit of 21.50 USD, the editor shows **1 USD = 116.2791 RSD**. Tap **Swap rate direction** to see USD per RSD. **Keep account amount when changing transaction amount** holds the amount you typed while you correct the original.
+4. Use the same steps for RUB income credited to USD. The account receives the exact confirmed USD credit. An RSD budget uses its independent dated RUB-to-RSD valuation. If the bank first credits a RUB account and you exchange the funds later, record the conversion as a transfer.
+5. If the bank posts a separate fee, open the saved transaction and select **Record separate bank fee**. Enter the separate fee in the account currency. A fee already included in the debit contributes to the displayed effective bank rate.
+
+Save a suggested amount as an estimate while the actual amount is unavailable. Open the transaction later to enter and confirm the final debit or credit. When offline, SharedLedger still uses the last applicable bank rate and can fall back to a dated cached quote. If no usable quote exists, the conversion remains pending.
+
+History shows the budget currency first with **≈** on estimated valuations. Distinct account and original currencies appear below it. Transaction details show each amount, rate, and source. Account balances use the native account currency.
+
+In **Settings → Exchange rates**, select an account, pair, and direction to see the latest confirmed rate and its date. A backdated entry uses confirmations from transactions dated on or before the selected day. Correcting or deleting the source transaction changes future suggestions. Saved amounts and rates on other transactions remain intact. [Storage and sync policy](schema.md#bank-conversion)
+
+### Recover a failed transaction deletion
+
+Apply the migrations through `202611220001` before retrying shared-budget deletions. Install the APK over the existing app, sign in to the same account, and open **Settings → Cloud sync**. Deletions queued by an older build use the corrected format on the first sync. If an earlier attempt is marked failed in the new app, choose **Retry sync** after the database migration or permission issue is resolved. The screen shows pending and failed counts and the last successful sync.
+
+If a budget lost editing access, the owner must restore it before the affected user can retry. A pending deletion stays hidden on the device where it was made. When the server accepts it, the deletion also appears on other devices after they sync. [Diagnostics and two-device checks](verification.md#transaction-deletion-and-sync-recovery)
 
 ## 12. Update the app or backend
 
