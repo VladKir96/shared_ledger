@@ -108,7 +108,8 @@ data class Entry(
     val createdAt: Long = System.currentTimeMillis(),
     override val updatedAt: Long = createdAt,
     override val deletedAt: Long? = null,
-    val bankConversion: BankConversion? = null
+    val bankConversion: BankConversion? = null,
+    val budgetRateConfirmedAt: Long? = null
 ) : LedgerRecord
 
 @Serializable

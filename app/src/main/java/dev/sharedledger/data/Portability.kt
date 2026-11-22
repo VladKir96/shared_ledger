@@ -112,6 +112,11 @@ class Portability @Inject constructor(private val repo: LedgerRepository) {
             }
             rateFields(entry.accountAmount, entry.accountRate, entry.accountRateDate, entry.accountRateSource)
             rateFields(entry.budgetAmount, entry.budgetRate, entry.budgetRateDate, entry.budgetRateSource)
+            entry.budgetRateConfirmedAt?.let { confirmed ->
+                require(confirmed > 0 && entry.type != EntryType.TRANSFER && entry.currency != entry.budgetCurrency &&
+                    entry.budgetRateSource == USER_DEFINED_BUDGET_RATE && entry.budgetRateDate == entry.date &&
+                    entry.budgetAmount?.decimal()?.signum() == 1) { "A transaction has invalid budget rate confirmation." }
+            }
             if (entry.type == EntryType.TRANSFER) {
                 require(entry.destinationId != null && entry.destinationId != entry.accountId &&
                     entry.destinationCurrency != null && accounts[entry.destinationId]?.currency == entry.destinationCurrency &&
@@ -185,8 +190,10 @@ class Portability @Inject constructor(private val repo: LedgerRepository) {
                         categoryId = entry.categoryId?.let(categoryMap::getValue), destinationId = entry.destinationId?.let(accountMap::getValue), ruleId = rule)
                     val adjusted = if (budget.currency == transferred.budgetCurrency || transferred.type == EntryType.TRANSFER) transferred
                     else if (budget.currency == transferred.currency) transferred.copy(budgetCurrency = budget.currency,
-                        budgetAmount = transferred.amount, budgetRate = "1", budgetRateDate = transferred.date, budgetRateSource = "Same currency")
-                    else transferred.copy(budgetCurrency = budget.currency, budgetAmount = null, budgetRate = null, budgetRateDate = null, budgetRateSource = null)
+                        budgetAmount = transferred.amount, budgetRate = "1", budgetRateDate = transferred.date,
+                        budgetRateSource = "Same currency", budgetRateConfirmedAt = null)
+                    else transferred.copy(budgetCurrency = budget.currency, budgetAmount = null, budgetRate = null,
+                        budgetRateDate = null, budgetRateSource = null, budgetRateConfirmedAt = null)
                     repo.store(budget, adjusted)
                     inserted++
                 }

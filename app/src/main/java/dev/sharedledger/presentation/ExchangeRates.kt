@@ -51,38 +51,52 @@ fun observeBankOffer(pair: BankPair?, day: LocalDate, except: String?, entries: 
     return offer
 }
 
+internal data class BudgetRateSuggestion(val quote: RateQuote?, val checking: Boolean)
+
 @Composable
-fun BudgetRatePreview(
-    plan: EntryRatePlan, amount: BigDecimal?, accountOverride: BigDecimal?, budgetOverride: BigDecimal?, vm: LedgerViewModel
-) {
+internal fun observeBudgetRate(
+    pair: BudgetRatePair?, day: LocalDate, previous: Entry?, entries: List<Entry>,
+    referenceOnly: Boolean, manualInput: Boolean, vm: LedgerViewModel
+): BudgetRateSuggestion {
     val online = onlineRates(vm)
     val today = LocalDate.now()
-    val targets = plan.foreignTargets(accountOverride, budgetOverride).intersect(setOf(plan.budget))
-    val allowOlder = !online && plan.day <= today
-    var cache by remember(plan.base, plan.day, targets, online) { mutableStateOf(emptyMap<String, RateQuote?>()) }
-    var loading by remember(plan.base, plan.day, targets, online) {
-        mutableStateOf(targets.isNotEmpty() && online && plan.day <= today)
-    }
-    LaunchedEffect(plan.base, plan.day, targets, allowOlder) {
-        if (targets.isNotEmpty()) vm.rates.observe(plan.base, targets, plan.day, allowOlder).collect { cache = it }
-    }
-    LaunchedEffect(plan.base, plan.day, targets, online) {
-        if (loading) {
-            try {
-                withContext(Dispatchers.IO) { vm.rates.ensure(plan.base, targets, plan.day, today) }
-            } finally {
-                loading = false
+    val offline = !online && day <= today
+    val saved = pair?.recorded(previous, day)?.takeUnless { referenceOnly }
+    var quote by remember(pair, day, previous, entries, referenceOnly, offline) { mutableStateOf(saved) }
+    var checking by remember(pair, day, previous, entries, referenceOnly, offline, manualInput) { mutableStateOf(false) }
+    LaunchedEffect(pair, day, previous, entries, referenceOnly, offline) {
+        if (pair != null && saved == null) {
+            vm.rates.observe(pair.original, setOf(pair.budget), day, offline, includeManual = !referenceOnly).collect {
+                quote = withContext(Dispatchers.IO) { vm.repository.budgetRate(pair, day, previous, referenceOnly, offline) }
             }
         }
     }
-    val quote = plan.quotes(cache, accountOverride, budgetOverride).budget
-    Panel(Modifier.fillMaxWidth()) {
-        RateLine("Budget valuation", plan.base, plan.budget, amount, quote, loading)
-        if (!online && targets.isNotEmpty()) {
-            Text(tr("Offline · cached rates may be outdated"), style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
+    LaunchedEffect(pair, day, previous, entries, referenceOnly, online, manualInput) {
+        if (pair != null && saved == null && !manualInput && online && day <= today) {
+            try {
+                val available = withContext(Dispatchers.IO) {
+                    vm.repository.budgetRate(pair, day, previous, referenceOnly, offline = false)
+                }
+                if (available == null) {
+                    checking = true
+                    withContext(Dispatchers.IO) {
+                        vm.rates.ensure(pair.original, setOf(pair.budget), day, today, includeManual = !referenceOnly)
+                    }
+                }
+            } finally {
+                checking = false
+            }
         }
     }
+    return BudgetRateSuggestion(quote, checking)
+}
+
+internal fun budgetRateLabel(source: String) = when {
+    source == USER_DEFINED_BUDGET_RATE || source == LAST_CONFIRMED_BUDGET_RATE || source == "Same currency" -> source
+    source.startsWith(MANUAL_RATE) -> "Configured manual rate"
+    source.startsWith(CACHED_BUDGET_RATE_PREFIX) -> "Cached reference rate · ${source.removePrefix(CACHED_BUDGET_RATE_PREFIX)}"
+    source.startsWith("Bank") || source == "Entered account amount" -> source
+    else -> "Reference API rate · $source"
 }
 
 fun bankSourceLabel(source: BankSource, date: String? = null, priorConfirmation: Long? = null): String = when (source) {
@@ -129,29 +143,8 @@ fun RecordedExchangeRates(entry: Entry, currency: String) {
     if (entry.currency != entry.budgetCurrency && entry.budgetRate != null) {
         Text("Budget valuation rate · 1 ${entry.currency} = ${entry.budgetRate} ${entry.budgetCurrency}",
             style = MaterialTheme.typography.bodySmall)
-        Text("${entry.budgetRateSource.orEmpty()} · ${entry.budgetRateDate.orEmpty()}", style = MaterialTheme.typography.bodySmall)
-    }
-}
-
-@Composable
-private fun RateLine(
-    label: String, base: String, target: String, amount: BigDecimal?, quote: RateQuote?, loading: Boolean = false,
-    recordedAmount: String? = null
-) {
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(tr(label), style = MaterialTheme.typography.labelMedium)
-        if (quote != null) {
-            val converted = recordedAmount ?: amount?.let { quote.convert(it, target) }
-            converted?.let { Text(money(it.decimal(), target), style = MaterialTheme.typography.titleMedium) }
-            Text("1 $base = ${quote.value} $target", style = MaterialTheme.typography.bodySmall)
-            Text("${LocalDate.parse(quote.date).shortDate()} · ${tr(quote.source)}",
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        } else if (loading) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                Text(tr("Checking exchange rates…"), style = MaterialTheme.typography.bodySmall)
-            }
-        } else Text(tr("Conversion pending"), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+        Text("Rate source · ${entry.budgetRateSource?.let(::budgetRateLabel).orEmpty()} · ${entry.budgetRateDate.orEmpty()}",
+            style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -280,14 +273,21 @@ private fun LastBankRatesPanel(state: LedgerState, vm: LedgerViewModel, today: L
 }
 
 @Composable
-fun RecurringAmount(rule: Rule, account: Account?, budget: String, vm: LedgerViewModel) {
+fun RecurringAmount(rule: Rule, account: Account?, budget: String, entries: List<Entry>, vm: LedgerViewModel) {
     val day = rule.nextDate() ?: LocalDate.parse(rule.start)
     val original = MonetaryLine(rule.amount.decimal(), rule.currency)
-    val amounts by produceState(transactionAmounts(original.takeIf { rule.currency == budget }, null, original), rule, account, budget, day) {
+    val offline = !onlineRates(vm) && day <= LocalDate.now()
+    val amounts by produceState(transactionAmounts(original.takeIf { rule.currency == budget }, null, original),
+        rule, account, budget, day, entries, offline) {
         val targets = setOfNotNull(budget, account?.currency).filterTo(mutableSetOf()) { it != rule.currency }
-        vm.rates.observe(rule.currency, targets, day, true).collect { quotes ->
-            val primary = if (rule.currency == budget) original else quotes[budget]?.let {
-                MonetaryLine(it.convert(original.value, budget).decimal(), budget, !it.source.startsWith(MANUAL_RATE))
+        vm.rates.observe(rule.currency, targets, day, offline).collect {
+            val primary = if (rule.currency == budget) original else account?.let {
+                val pair = BudgetRatePair(rule.budgetId, it.id, rule.currency, budget, rule.type)
+                vm.repository.budgetRate(pair, day, null, useReference = false, offline = offline)?.let { quote ->
+                    quote.budgetConversion(original.value, budget)?.let { conversion ->
+                        MonetaryLine(conversion.amount.decimal(), budget, !quote.source.isManualBudgetRate())
+                    }
+                }
             }
             val accountAmount = if (account == null || account.currency == rule.currency) null else {
                 val pair = BankPair(rule.budgetId, account.id, rule.currency, account.currency, rule.type)

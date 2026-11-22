@@ -37,16 +37,17 @@ class Rates @Inject constructor(private val db: LedgerDatabase, private val prov
     private val locks = Array(32) { Mutex() }
     val providerNames get() = providers.map(RateProvider::name)
 
-    fun observe(base: String, targets: Set<String>, day: LocalDate, allowOlder: Boolean) =
+    fun observe(base: String, targets: Set<String>, day: LocalDate, allowOlder: Boolean, includeManual: Boolean = true) =
         dao.observeRateWindow(base, targets.toList(), day.minusDays(RATE_LOOKBACK).toString(), day.toString())
-            .map { targets.associateWith { target -> cached(base, target, day, allowOlder) } }
+            .map { targets.associateWith { target -> cached(base, target, day, allowOlder, includeManual) } }
 
-    suspend fun cached(base: String, target: String, day: LocalDate, allowOlder: Boolean = false): RateQuote? {
+    suspend fun cached(base: String, target: String, day: LocalDate, allowOlder: Boolean = false,
+                       includeManual: Boolean = true): RateQuote? {
         if (base == target) return RateQuote("1", day.toString(), "Same currency")
         val end = day.toString()
         val start = day.minusDays(RATE_LOOKBACK).toString()
-        val direct = dao.rateWindow(base, target, start, end)
-        val inverse = dao.rateWindow(target, base, start, end)
+        val direct = dao.rateWindow(base, target, start, end).filter { includeManual || it.source != MANUAL_RATE }
+        val inverse = dao.rateWindow(target, base, start, end).filter { includeManual || it.source != MANUAL_RATE }
         fun Rate.quote(invert: Boolean): RateQuote = if (invert) {
             RateQuote(BigDecimal.ONE.divide(value.decimal(), MathContext.DECIMAL128).storage(), date, "$source (inverse)")
         } else RateQuote(value, date, source)
@@ -87,7 +88,8 @@ class Rates @Inject constructor(private val db: LedgerDatabase, private val prov
 
     /** Today uses a dated batch too, so a provider cannot return a quote after the selected day. */
     suspend fun ensure(
-        base: String, targets: Set<String>, day: LocalDate, today: LocalDate, force: Boolean = false, scheduled: Boolean = false
+        base: String, targets: Set<String>, day: LocalDate, today: LocalDate, force: Boolean = false, scheduled: Boolean = false,
+        includeManual: Boolean = true
     ): RateBatch {
         if (day > today) return RateBatch(incomplete = true)
         val lock = locks[Math.floorMod(base.hashCode() + day.hashCode(), locks.size)]
@@ -98,13 +100,13 @@ class Rates @Inject constructor(private val db: LedgerDatabase, private val prov
             val missing = checks.filter { (target, check) ->
                 when {
                     force -> true
-                    !scheduled && cached(base, target, day) != null -> false
+                    !scheduled && cached(base, target, day, includeManual = includeManual) != null -> false
                     else -> isDue(check, now)
                 }
             }.keys.toMutableSet()
             val suppressed = checks.filter { (target, check) ->
                 check != null && (check.rateDate == null || check.retryable) && target !in missing &&
-                    (scheduled || cached(base, target, day) == null)
+                    (scheduled || cached(base, target, day, includeManual = includeManual) == null)
             }
             val temporary = mutableSetOf<String>()
             var downloaded = false

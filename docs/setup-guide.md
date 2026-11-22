@@ -183,8 +183,9 @@ A migration is a versioned SQL file that creates or updates the PostgreSQL schem
 | [`202611210002_budget_import.sql`](../supabase/migrations/202611210002_budget_import.sql) | Create-only shared import batches for owners and editors |
 | [`202611210003_bank_conversion.sql`](../supabase/migrations/202611210003_bank_conversion.sql) | Optional bank conversion metadata and protection for confirmed amounts during older-client edits |
 | [`202611220001_transaction_tombstones.sql`](../supabase/migrations/202611220001_transaction_tombstones.sql) | Canonical exchange-rate field names and versioned deletion that preserves server-side values |
+| [`202611220002_budget_valuation.sql`](../supabase/migrations/202611220002_budget_valuation.sql) | Budget valuation confirmation timestamp and compatibility with edits from older clients |
 
-1. From the repository root, preview the hosted migrations and check that the `Target` line names the intended project. A fresh project should list all six files above. If you already deployed bank conversion metadata, only `202611220001_transaction_tombstones.sql` should be pending.
+1. From the repository root, preview the hosted migrations and check that the `Target` line names the intended project. A fresh project should list all seven files above. If you already deployed the transaction deletion migration, only `202611220002_budget_valuation.sql` should be pending.
 
    ```sh
    supabase db push --dry-run --remote
@@ -197,7 +198,7 @@ A migration is a versioned SQL file that creates or updates the PostgreSQL schem
    supabase migration list --remote
    ```
 
-3. Check that all six migration versions through `202611220001` appear in both the **Local** and **Remote** columns. In the Supabase Dashboard for that project, open **Table Editor**, select the **public** schema, and look for `profiles`, `budgets`, `budget_memberships`, `accounts`, `categories`, `transactions`, `recurring_rules`, `exchange_rate_cache`, and `invitations`. Empty tables are expected before users and budgets are created.
+3. Check that all seven migration versions through `202611220002` appear in both the **Local** and **Remote** columns. In the Supabase Dashboard for that project, open **Table Editor**, select the **public** schema, and look for `profiles`, `budgets`, `budget_memberships`, `accounts`, `categories`, `transactions`, `recurring_rules`, `exchange_rate_cache`, and `invitations`. Empty tables are expected before users and budgets are created.
 
 ### If the CLI tries to connect to `127.0.0.1:54322`
 
@@ -477,6 +478,14 @@ Save a suggested amount as an estimate while the actual amount is unavailable. O
 History shows the budget currency first with **≈** on estimated valuations. Distinct account and original currencies appear below it. Transaction details show each amount, rate, and source. Account balances use the native account currency.
 
 In **Settings → Exchange rates**, select an account, pair, and direction to see the latest confirmed rate and its date. A backdated entry uses confirmations from transactions dated on or before the selected day. Correcting or deleting the source transaction changes future suggestions. Saved amounts and rates on other transactions remain intact. [Storage and sync policy](schema.md#bank-conversion)
+
+### Setting a budget valuation
+
+1. Add or edit an income or expense. For a 100 USD income to a USD account in an RSD budget, enter **100 USD**.
+2. In **Budget valuation**, enter **114** in the RSD-per-USD rate field or **11,400 RSD** in the amount field using `11400`. Editing either field recalculates the other. Changing the original amount uses the selected rate to recalculate the budget amount.
+3. Save to confirm the edited valuation. A later 200 USD income on the same account can reuse 114 and show **22,800 RSD**, including offline. Expenses have their own rate history. Use **Use reference rate** to replace a valuation with the applicable provider quote.
+
+If the original amount is already in the budget currency, the budget uses that amount directly. When the account has a third currency, the bank debit or credit and the budget valuation can be edited independently. Transaction details show the original amount, account amount, budget rate, rate date, and source. Deploy `202611220002` to share the new confirmations across devices. [Storage and sync policy](schema.md#budget-valuation)
 
 ### Recover a failed transaction deletion
 

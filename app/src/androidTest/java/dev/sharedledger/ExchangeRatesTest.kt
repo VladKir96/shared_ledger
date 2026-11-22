@@ -104,7 +104,8 @@ class ExchangeRatesTest {
         assertNull(pending.budgetAmount)
         assertTrue(refresh.run(online = false, today = today))
         assertTrue(provider.requests.isEmpty())
-        val manual = draft(sunday).copy(note = "Manual", accountRate = BigDecimal("118"))
+        val manual = draft(sunday).copy(note = "Manual", accountRate = BigDecimal("118"),
+            budgetValuation = BudgetValuationEdit.Rate(BigDecimal("119")))
         repo.saveEntry(budget.id, manual)
         assertFalse(refresh.run(online = true, today = today))
         val filled = requireNotNull(repo.dao.entry(pending.id))
@@ -119,8 +120,9 @@ class ExchangeRatesTest {
         assertEquals("2340", edited.budgetAmount)
         assertEquals("Edited", edited.note)
         val manualEntry = repo.dao.entries(budget.id).single { it.note == "Manual" }
-        assertEquals("2360", manualEntry.budgetAmount)
-        assertEquals("Manual", manualEntry.budgetRateSource)
+        assertEquals("2360", manualEntry.accountAmount)
+        assertEquals("2380", manualEntry.budgetAmount)
+        assertEquals(USER_DEFINED_BUDGET_RATE, manualEntry.budgetRateSource)
     }
 
     @Test fun uncertainCachedOlderQuoteWorksOfflineAndFutureQuotesAreExcluded() = runBlocking {
@@ -132,7 +134,119 @@ class ExchangeRatesTest {
         val cached = repo.dao.entries(budget.id).single()
         assertEquals("2343.2", cached.budgetAmount)
         assertEquals(earlier.toString(), cached.budgetRateDate)
+        assertTrue(cached.budgetRateSource?.startsWith(CACHED_BUDGET_RATE_PREFIX) == true)
         assertNull(rates.cached("EUR", "RUB", sunday, allowOlder = true))
+    }
+
+    @Test fun usdIncomeAndExpenseUseIndependentBudgetValuationAndKeepSavedAmounts() = runBlocking {
+        val usd = cash.copy(id = id(), name = "Debit USD", currency = "USD")
+        repo.saveAccount(usd)
+        val salary = repo.dao.categories(budget.id).first { it.type == EntryType.INCOME }
+        val income = EntryDraft(EntryType.INCOME, BigDecimal("100"), today, usd.id, salary.id, "USD", note = "First")
+        rates.ensure("USD", setOf("RSD"), today, today)
+        repo.saveEntry(budget.id, income)
+        val first = repo.dao.entries(budget.id).single()
+        assertEquals("11700", first.budgetAmount)
+        assertEquals("Frankfurter", first.budgetRateSource)
+        repo.saveEntry(budget.id, income.copy(budgetValuation = BudgetValuationEdit.Rate(BigDecimal("114"))), first.id)
+        val manual = requireNotNull(repo.dao.entry(first.id))
+        assertEquals("11400", manual.budgetAmount)
+        assertEquals("100", manual.accountAmount)
+        assertEquals("1", manual.accountRate)
+        assertNotNull(manual.budgetRateConfirmedAt)
+        provider.response = { base, targets, day -> targets.map { observation(base, it, day, day, "140") } }
+        rates.ensure("USD", setOf("RSD"), today, today, force = true)
+        repo.saveEntry(budget.id, income.copy(note = "Edited note"), first.id)
+        assertEquals(manual.budgetRateConfirmedAt, repo.dao.entry(first.id)?.budgetRateConfirmedAt)
+        assertEquals("11400", repo.dao.entry(first.id)?.budgetAmount)
+        repo.saveEntry(budget.id, income.copy(amount = BigDecimal("200"), note = "Second"), allowOlder = true)
+        val second = repo.dao.entries(budget.id).single { it.note == "Second" }
+        assertEquals("22800", second.budgetAmount)
+        assertEquals(LAST_CONFIRMED_BUDGET_RATE, second.budgetRateSource)
+        assertNull(second.budgetRateConfirmedAt)
+        val expense = EntryDraft(EntryType.EXPENSE, BigDecimal("50"), today, usd.id, category.id, "USD")
+        val expensePair = BudgetRatePair(budget.id, usd.id, "USD", "RSD", EntryType.EXPENSE)
+        assertEquals("140", repo.budgetRate(expensePair, today, null, useReference = false, offline = false)?.value)
+        repo.saveEntry(budget.id, expense.copy(budgetValuation = BudgetValuationEdit.Amount(BigDecimal("5700"))))
+        val entries = repo.dao.entries(budget.id)
+        val purchase = entries.single { it.type == EntryType.EXPENSE }
+        assertEquals("114", purchase.budgetRate)
+        assertEquals("50", purchase.accountAmount)
+        assertFalse(purchase.isBudgetApproximate())
+        assertEquals("250", accountBalance(usd, entries).value.storage())
+        assertEquals("34200", totals(entries, "RSD").income.storage())
+        assertEquals("5700", totals(entries, "RSD").expenses.storage())
+    }
+
+    @Test fun latestBudgetRateIsScopedDatedAndCanBeReplacedOrRemoved() = runBlocking {
+        val usd = cash.copy(id = id(), name = "Debit", currency = "USD")
+        val other = usd.copy(id = id(), name = "Savings")
+        repo.saveAccount(usd)
+        repo.saveAccount(other)
+        val anotherBudget = Budget(id(), "Travel", "RSD")
+        repo.dao.put(anotherBudget)
+        val travel = usd.copy(id = id(), budgetId = anotherBudget.id)
+        repo.saveAccount(travel)
+        val pair = BudgetRatePair(budget.id, usd.id, "USD", "RSD", EntryType.EXPENSE)
+        val oldDay = today.minusDays(2)
+        val earlier = EntryDraft(EntryType.EXPENSE, BigDecimal("100"), oldDay, usd.id, category.id, "USD",
+            budgetValuation = BudgetValuationEdit.Rate(BigDecimal("114")))
+        repo.saveEntry(budget.id, earlier)
+        repo.saveEntry(budget.id, earlier.copy(date = today, note = "Latest",
+            budgetValuation = BudgetValuationEdit.Rate(BigDecimal("115"))))
+        val latest = repo.dao.entries(budget.id).single { it.note == "Latest" }
+        suspend fun suggestion(scope: BudgetRatePair, day: LocalDate = today) =
+            repo.budgetRate(scope, day, null, useReference = false, offline = false)
+        repo.dao.put(observation("USD", "RSD", today, today, "117"))
+        repo.dao.put(observation("USD", "RSD", today, today, "116", "Manual"))
+        assertEquals("114", suggestion(pair, oldDay)?.value)
+        assertNull(suggestion(pair, oldDay.minusDays(1)))
+        assertEquals("115", suggestion(pair)?.value)
+        assertEquals("116", suggestion(pair.copy(accountId = other.id))?.value)
+        assertEquals("116", suggestion(pair.copy(budgetId = anotherBudget.id, accountId = travel.id))?.value)
+        repo.saveEntry(budget.id, earlier.copy(date = today, note = "Latest",
+            budgetValuation = BudgetValuationEdit.Amount(BigDecimal("11250"))), latest.id)
+        assertEquals("112.5", suggestion(pair)?.value)
+        repo.saveEntry(budget.id, earlier.copy(date = today, budgetValuation = BudgetValuationEdit.Reference), latest.id)
+        assertEquals("117", repo.dao.entry(latest.id)?.budgetRate)
+        assertNull(repo.dao.entry(latest.id)?.budgetRateConfirmedAt)
+        assertEquals("114", suggestion(pair)?.value)
+        repo.deleteEntry(repo.dao.entries(budget.id).single { it.date == oldDay.toString() })
+        assertEquals("116", suggestion(pair)?.value)
+    }
+
+    @Test fun sharedThreeCurrencyEntryKeepsIndependentConversionsInOutboxAndJson() = runBlocking {
+        val user = id()
+        repo.principal.value = user
+        repo.promote(budget.id)
+        val usd = cash.copy(id = id(), name = "USD", currency = "USD")
+        repo.saveAccount(usd)
+        val salary = repo.dao.categories(budget.id).first { it.type == EntryType.INCOME }
+        repo.dao.put(requireNotNull(repo.dao.budget(budget.id)).copy(role = Role.EDITOR))
+        val income = EntryDraft(EntryType.INCOME, BigDecimal("100000"), today, usd.id, salary.id, "RUB",
+            budgetValuation = BudgetValuationEdit.Amount(BigDecimal("113500")), bankAmount = BigDecimal("1050"), bankConfirmed = true)
+        repo.saveEntry(budget.id, income)
+        val saved = repo.dao.entries(budget.id).single()
+        val queued = requireNotNull(repo.dao.pending("entry", saved.id))
+        assertEquals(saved, ledgerJson.decodeFromString<Entry>(queued.body))
+        assertEquals("1050", saved.accountAmount)
+        assertEquals("0.0105", saved.accountRate)
+        assertEquals(BankSource.BANK_ACTUAL, saved.bankConversion?.source)
+        assertEquals("113500", saved.budgetAmount)
+        assertEquals("1.135", saved.budgetRate)
+        val files = Portability(repo)
+        val archive = files.decodeJson(files.encode(files.export(listOf(budget.id), DateSpan()), csv = false))
+        val restored = Room.inMemoryDatabaseBuilder(instrumentation.targetContext, LedgerDatabase::class.java).build()
+        try {
+            val local = LedgerRepository(restored, Rates(restored, emptyList()))
+            Portability(local).restore(archive)
+            assertEquals(saved.budgetRateConfirmedAt, local.dao.entry(saved.id)?.budgetRateConfirmedAt)
+            assertEquals("113500", local.dao.entry(saved.id)?.budgetAmount)
+            val pair = BudgetRatePair(budget.id, usd.id, "RUB", "RSD", EntryType.INCOME)
+            assertEquals("1.135", local.budgetRate(pair, today, null, useReference = false, offline = true)?.value)
+        } finally {
+            restored.close()
+        }
     }
 
     @Test fun failuresLeaveTransactionsIntactAndRetryOnlyMissingPairs() = runBlocking {
@@ -198,6 +312,26 @@ class ExchangeRatesTest {
             it.query("SELECT count(*) FROM rates").use { c -> assertTrue(c.moveToFirst()); assertEquals(2, c.getInt(0)) }
             it.query("SELECT count(*) FROM rate_checks").use { c -> assertTrue(c.moveToFirst()); assertEquals(2, c.getInt(0)) }
             it.query("SELECT automaticRates FROM settings").use { c -> assertTrue(c.moveToFirst()); assertEquals(1, c.getInt(0)) }
+        }
+    }
+
+    @Test fun valuationMigrationKeepsHistoricalRatesWithoutInferringConfirmation() {
+        val database = "valuation-migration-6-7"
+        migrations.createDatabase(database, 6).use {
+            it.execSQL("INSERT INTO budgets (id,name,currency,type,icon,color,role,createdAt,updatedAt) VALUES ('b','Test','RSD','PERSONAL','wallet',1,'OWNER',1,1)")
+            it.execSQL("INSERT INTO accounts (id,budgetId,name,currency,type,opening,icon,color,`order`,archived,createdAt,updatedAt) VALUES ('a','b','Debit','USD','CASH','0','wallet',1,0,0,1,1)")
+            it.execSQL("""INSERT INTO entries (id,budgetId,accountId,type,amount,currency,accountCurrency,budgetCurrency,date,
+                accountAmount,budgetAmount,budgetRate,budgetRateDate,budgetRateSource,note,createdAt,updatedAt) VALUES
+                ('e','b','a','INCOME','100','USD','USD','RSD','2026-11-22','100','11400','114','2026-11-22','Manual','',1,1)""")
+        }
+        migrations.runMigrationsAndValidate(database, 7, true, LedgerDatabase.MIGRATION_6_7).use {
+            it.query("SELECT accountAmount,budgetAmount,budgetRate,budgetRateConfirmedAt FROM entries").use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals("100", cursor.getString(0))
+                assertEquals("11400", cursor.getString(1))
+                assertEquals("114", cursor.getString(2))
+                assertTrue(cursor.isNull(3))
+            }
         }
     }
 

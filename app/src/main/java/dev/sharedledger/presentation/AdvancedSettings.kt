@@ -76,7 +76,7 @@ private fun RecurringSettings(state: LedgerState, vm: LedgerViewModel) {
             val category = state.ledger.categories.find { it.id == rule.categoryId }
             Panel(Modifier.fillMaxWidth()) {
                 Text(rule.note.ifBlank { category?.name ?: rule.type.label() }, style = MaterialTheme.typography.titleMedium)
-                RecurringAmount(rule, state.ledger.accounts.find { it.id == rule.accountId }, budget.currency, vm)
+                RecurringAmount(rule, state.ledger.accounts.find { it.id == rule.accountId }, budget.currency, state.ledger.entries, vm)
                 Text(rule.frequency.label(), style = MaterialTheme.typography.bodySmall)
                 Text(when {
                     !rule.active -> "Paused"

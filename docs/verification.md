@@ -15,6 +15,7 @@ psql 'postgresql://postgres:postgres@127.0.0.1:54322/postgres' -v ON_ERROR_STOP=
 psql 'postgresql://postgres:postgres@127.0.0.1:54322/postgres' -v ON_ERROR_STOP=1 -f supabase/tests/import_merge.sql
 psql 'postgresql://postgres:postgres@127.0.0.1:54322/postgres' -v ON_ERROR_STOP=1 -f supabase/tests/bank_conversion.sql
 psql 'postgresql://postgres:postgres@127.0.0.1:54322/postgres' -v ON_ERROR_STOP=1 -f supabase/tests/transaction_tombstones.sql
+psql 'postgresql://postgres:postgres@127.0.0.1:54322/postgres' -v ON_ERROR_STOP=1 -f supabase/tests/budget_valuation.sql
 ```
 
 The SQL uses fixed test identities inside a transaction and rolls back. It validates invitation redemption, direct RLS access, editor and viewer authorization, retries, conflict versions, and revocation. It does not require an Android client.
@@ -46,6 +47,12 @@ An upgrade fixture reproduced the legacy rejection of a pasted Share message and
 ## Bank conversion verification
 
 The JVM tests cover exact decimal and reciprocal rates, dated reference fallback, and choosing by transaction date and confirmation time. The Room and editor tests record and correct successive RSD purchases and RUB income on a USD account. They verify that official rate changes leave confirmed values intact and that deleting the latest confirmation falls back to the preceding eligible transaction. JSON backup and the Room 4 to 5 migration continue to preserve historical fields.
+
+## Manual budget valuation verification
+
+The main budget panel previously showed a read-only preview. The only override was a rate field under the collapsed **Manual exchange rate** controls. The editor tests now change each budget field, change the original amount, restore the reference quote, save, and verify that the next USD income reuses the manual rate.
+
+Room tests cover income and expenses, history across dates and scopes, refresh and deletion, independent bank and budget valuations, and Room 6 to 7 and JSON restore. The clean debug build passed 35 JVM tests and 35 Android 15 tests. Lint reported zero errors and five warnings, and all six local SQL suites passed. Two authenticated clients on the disposable local Supabase API received the same 100 USD account credit and 11,400 RSD valuation. Hosted deployment is outside this verification. [Apply the migrations](setup-guide.md#5-apply-and-verify-the-database-migrations)
 
 ## Transaction deletion and sync recovery
 

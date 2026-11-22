@@ -27,6 +27,8 @@ import dev.sharedledger.domain.*
 import java.time.LocalDate
 import java.math.RoundingMode
 
+private enum class BudgetInput { RATE, AMOUNT, REFERENCE }
+
 @Composable
 fun EditorScreen(state: LedgerState, vm: LedgerViewModel, type: EntryType, entry: Entry?, duplicate: Boolean, feeAccount: String? = null, navigateBack: () -> Unit) {
     val budget = state.budget ?: return
@@ -60,7 +62,8 @@ fun EditorScreen(state: LedgerState, vm: LedgerViewModel, type: EntryType, entry
     var received by rememberSaveable { mutableStateOf(entry?.destinationAmount.orEmpty()) }
     var showRates by rememberSaveable { mutableStateOf(false) }
     var manualAccount by rememberSaveable { mutableStateOf("") }
-    var manualBudget by rememberSaveable { mutableStateOf("") }
+    var budgetInput by rememberSaveable { mutableStateOf<BudgetInput?>(null) }
+    var budgetText by rememberSaveable { mutableStateOf("") }
     val editingActual = editing && entry?.bankConversion?.source == BankSource.BANK_ACTUAL
     val editingEntered = editing && entry?.bankConversion?.source == BankSource.ENTERED_AMOUNT
     var enteredAmount by rememberSaveable { mutableStateOf(entry?.accountAmount.takeIf { editingActual || editingEntered }) }
@@ -71,6 +74,19 @@ fun EditorScreen(state: LedgerState, vm: LedgerViewModel, type: EntryType, entry
         BankPair(budget.id, it.id, currency, it.currency, type)
     }
     val estimate = observeBankOffer(pair, date, entry?.id.takeIf { editing }, state.ledger.entries, vm)
+    val budgetPair = account?.takeIf { type != EntryType.TRANSFER && currency != budget.currency }?.let {
+        BudgetRatePair(budget.id, it.id, currency, budget.currency, type)
+    }
+    val previous = entry.takeIf { editing }
+    val manualBudget = budgetInput == BudgetInput.RATE || budgetInput == BudgetInput.AMOUNT
+    val useReference = budgetInput == BudgetInput.REFERENCE
+    val budgetSuggestion = observeBudgetRate(budgetPair, date, previous, state.ledger.entries, useReference, manualBudget, vm)
+    val budgetValuation = when (budgetInput) {
+        BudgetInput.RATE -> parseValuationRate(budgetText)?.let { BudgetValuationEdit.Rate(it) }
+        BudgetInput.AMOUNT -> parseMoney(budgetText)?.let { BudgetValuationEdit.Amount(it) }
+        BudgetInput.REFERENCE -> BudgetValuationEdit.Reference
+        null -> null
+    }
 
     fun clearBankInput() {
         enteredAmount = null
@@ -78,10 +94,25 @@ fun EditorScreen(state: LedgerState, vm: LedgerViewModel, type: EntryType, entry
         keepAmount = false
     }
 
+    fun clearBudgetInput() {
+        budgetInput = null
+        budgetText = ""
+    }
+
+    fun originalAmount(value: java.math.BigDecimal) = previous?.takeIf {
+        it.currency == currency && it.amount.decimal().compareTo(value) == 0
+    }?.amount?.decimal() ?: value.forCurrency(currency)
+
     fun changeOriginal(value: String) {
         if (value == expression) return
         val oldValue = calculate(expression)
         val newValue = calculate(value)
+        if (budgetInput == BudgetInput.AMOUNT && oldValue != null && oldValue.compareTo(newValue ?: java.math.BigDecimal.ZERO) != 0) {
+            budgetValuation?.manualConversion(originalAmount(oldValue), budget.currency, date)?.let {
+                budgetInput = BudgetInput.RATE
+                budgetText = it.rate
+            }
+        }
         if (!keepAmount && oldValue?.compareTo(newValue ?: java.math.BigDecimal.ZERO) != 0) clearBankInput()
         expression = value
     }
@@ -91,7 +122,20 @@ fun EditorScreen(state: LedgerState, vm: LedgerViewModel, type: EntryType, entry
     val liveResult = result ?: remember(expression) { calculate(expression.trimEnd('+', '−', '×', '÷')) }
     val allowed = budget.role != Role.VIEWER
     val busy by vm.busy.collectAsState()
-    val original = liveResult?.takeIf { it.signum() > 0 }?.forCurrency(currency)?.takeIf { it.signum() > 0 }
+    val original = liveResult?.let(::originalAmount)?.takeIf { it.isBudgetMagnitude() }
+    val recordedBudgetRate = budgetPair?.recorded(previous, date)?.takeUnless { useReference || manualBudget }
+    val budgetPreview = original?.let { value ->
+        when {
+            manualBudget -> budgetValuation?.manualConversion(value, budget.currency, date)
+            recordedBudgetRate != null && previous != null && value.compareTo(previous.amount.decimal()) == 0 ->
+                Conversion(requireNotNull(previous.budgetAmount), recordedBudgetRate.value, recordedBudgetRate.date, recordedBudgetRate.source)
+            else -> budgetSuggestion.quote?.budgetConversion(value, budget.currency)
+        }
+    }
+    val budgetError = original != null && (
+        (manualBudget || budgetSuggestion.quote != null) && budgetPreview == null ||
+            recordedBudgetRate != null && previous?.budgetRateConfirmedAt != null && budgetPreview?.amount?.decimal()?.signum() == 0
+        )
     val manualQuote = parseMoney(manualAccount)?.takeIf { it.signum() > 0 }?.let { RateQuote(it.storage(), dateText, "Manual") }
     val exactStored = entry?.takeIf { editing && it.accountId == accountId && it.currency == currency && it.date == dateText &&
         original?.compareTo(it.amount.decimal()) == 0 && manualQuote == null }
@@ -108,7 +152,8 @@ fun EditorScreen(state: LedgerState, vm: LedgerViewModel, type: EntryType, entry
     }
     val correctionNeedsConfirmation = editingActual && exactStored != null && enteredAmount != null &&
         validEntered?.compareTo(exactStored.accountAmount?.decimal() ?: java.math.BigDecimal.ZERO) != 0 && !bankConfirmed
-    val canSave = allowed && !busy && result?.forCurrency(currency)?.signum() == 1 && account != null &&
+    val canSave = allowed && !busy && result?.let(::originalAmount)?.isBudgetMagnitude() == true && account != null &&
+        !budgetError && (!useReference || budgetPreview != null) &&
         (!correctionNeedsConfirmation && (enteredAmount == null || pair == null || validEntered != null)) &&
         (if (type == EntryType.TRANSFER) destination != null else categoryId != null)
 
@@ -116,13 +161,12 @@ fun EditorScreen(state: LedgerState, vm: LedgerViewModel, type: EntryType, entry
         val selectedAccount = account ?: return
         val amount = result ?: return
         val accountRate = parseMoney(manualAccount)
-        val budgetRate = parseMoney(manualBudget)
-        if (manualAccount.isNotBlank() && accountRate?.signum() != 1 || manualBudget.isNotBlank() && budgetRate?.signum() != 1) {
+        if (manualAccount.isNotBlank() && accountRate?.signum() != 1) {
             vm.notice("Enter a positive decimal exchange rate.")
             return
         }
         val draft = EntryDraft(type, amount, date, selectedAccount.id, categoryId, currency, note, payer,
-            destinationId, parseMoney(received), accountRate, budgetRate,
+            destinationId, parseMoney(received), accountRate, budgetValuation,
             validEntered.takeIf { pair != null && enteredAmount != null }, bankConfirmed && pair != null)
         vm.execute("Transaction saved", navigateBack) {
             vm.repository.saveEntry(budget.id, draft, entry?.id.takeIf { editing }, !vm.rateNetwork.available() && date <= LocalDate.now())
@@ -143,7 +187,7 @@ fun EditorScreen(state: LedgerState, vm: LedgerViewModel, type: EntryType, entry
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(currency, color = Mint, style = MaterialTheme.typography.labelLarge)
                         Spacer(Modifier.weight(1f))
-                        if (pair == null) Text(expression.ifBlank { "0" }, color = Color.White, style = MaterialTheme.typography.headlineLarge,
+                        if (pair == null && budgetPair == null) Text(expression.ifBlank { "0" }, color = Color.White, style = MaterialTheme.typography.headlineLarge,
                             maxLines = 1, overflow = TextOverflow.Ellipsis)
                         else BasicTextField(expression, { value -> if (value.length <= 96) changeOriginal(value.replace(',', '.')) },
                             modifier = Modifier.weight(3f).testTag("transaction-amount").semantics { contentDescription = "Transaction amount in $currency" },
@@ -206,21 +250,60 @@ fun EditorScreen(state: LedgerState, vm: LedgerViewModel, type: EntryType, entry
                     Text("Record a separately posted bank fee as a separate expense.", style = MaterialTheme.typography.bodySmall)
                 }
             }
-            if (account != null && type != EntryType.TRANSFER && currency != budget.currency) {
-                val plan = EntryRatePlan(currency, date, account.currency, budget.currency, entry.takeIf { editing })
-                BudgetRatePreview(plan, original, manualQuote?.value?.decimal().takeIf { enteredAmount == null },
-                    parseMoney(manualBudget)?.takeIf { it.signum() > 0 }, vm)
+            if (budgetPair != null) {
+                Panel(Modifier.fillMaxWidth()) {
+                    Text("Budget valuation", style = MaterialTheme.typography.titleMedium)
+                    OutlinedTextField(
+                        if (budgetInput == BudgetInput.RATE) budgetText else
+                            budgetPreview?.rate ?: budgetSuggestion.quote?.value.orEmpty().takeUnless { manualBudget }.orEmpty(),
+                        { if (it.length <= 80) { budgetInput = BudgetInput.RATE; budgetText = it } },
+                        Modifier.fillMaxWidth().testTag("budget-rate"), enabled = allowed, singleLine = true,
+                        label = { Text("Rate in ${budgetPair.budget} per ${budgetPair.original}") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        isError = budgetError && budgetInput == BudgetInput.RATE
+                    )
+                    OutlinedTextField(
+                        if (budgetInput == BudgetInput.AMOUNT) budgetText else budgetPreview?.amount.orEmpty(),
+                        { if (it.length <= 28) { budgetInput = BudgetInput.AMOUNT; budgetText = it } },
+                        Modifier.fillMaxWidth().testTag("budget-amount"), enabled = allowed, singleLine = true,
+                        label = { Text("Budget amount in ${budgetPair.budget}") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        isError = budgetError && budgetInput == BudgetInput.AMOUNT
+                    )
+                    val quote = budgetSuggestion.quote
+                    val status = when {
+                        budgetError -> "Enter a positive budget amount within the currency’s precision and supported range."
+                        manualBudget -> "User-defined · Save to remember this rate for this account and transaction type."
+                        quote != null -> "${budgetRateLabel(quote.source)} · ${LocalDate.parse(quote.date).shortDate()}"
+                        budgetSuggestion.checking -> "Checking exchange rates…"
+                        useReference -> "No reference rate is available for this date."
+                        else -> "Conversion pending"
+                    }
+                    Text(status, style = MaterialTheme.typography.bodySmall,
+                        color = if (budgetError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (allowed && !useReference && (manualBudget || quote?.source.isManualBudgetRate() || recordedBudgetRate != null))
+                        TextButton({ budgetInput = BudgetInput.REFERENCE; budgetText = "" }) {
+                            Text("Use reference rate")
+                        }
+                    if (allowed && budgetInput != null) TextButton(::clearBudgetInput) { Text("Use saved or suggested rate") }
+                }
+            } else if (account != null && type != EntryType.TRANSFER && account.currency != budget.currency) {
+                Panel(Modifier.fillMaxWidth()) {
+                    Text("Budget valuation", style = MaterialTheme.typography.titleMedium)
+                    original?.let { Text(money(it, budget.currency)) }
+                    Text("Transaction already in ${budget.currency}", style = MaterialTheme.typography.bodySmall)
+                }
             }
             Calculator(expression, ::changeOriginal)
             val accountNames = accounts.associate { it.id to "${it.name} · ${it.currency}" }
             Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                 Select(if (type == EntryType.TRANSFER) "From account" else "Account", accountId, accounts.map { it.id },
                     { accountNames[it] ?: "Choose account" }, Modifier.weight(1f)) {
-                    accountId = it; currencyOverride = null; manualAccount = ""; manualBudget = ""; clearBankInput()
+                    accountId = it; currencyOverride = null; manualAccount = ""; clearBudgetInput(); clearBankInput()
                     if (destinationId == it) destinationId = null
                 }
                 if (type != EntryType.TRANSFER) Select("Currency", currency, currencyCodes, { it }, Modifier.weight(.65f)) {
-                    currencyOverride = it; manualAccount = ""; manualBudget = ""; clearBankInput()
+                    currencyOverride = it; manualAccount = ""; clearBudgetInput(); clearBankInput()
                 } else Select("To account", destinationId, destinations.map { it.id }, { accountNames[it] ?: "Choose account" },
                     Modifier.weight(1f)) { destinationId = it; received = "" }
             }
@@ -230,22 +313,18 @@ fun EditorScreen(state: LedgerState, vm: LedgerViewModel, type: EntryType, entry
             } else if (destination != null && destination.currency != currency) {
                 Field("Amount received in ${destination.currency}", received, { received = it })
             }
-            DateButton("", date, Modifier.fillMaxWidth()) { dateText = it.toString(); manualAccount = ""; manualBudget = "" }
+            DateButton("", date, Modifier.fillMaxWidth()) { dateText = it.toString(); manualAccount = ""; clearBudgetInput() }
             if (state.ledger.members.isNotEmpty()) {
                 val members = state.ledger.members.associate { it.userId to it.name }
                 Select("Paid by", payer, state.ledger.members.filter { it.active || it.userId == payer }.map { it.userId },
                     { members[it] ?: "Select payer" }, Modifier.fillMaxWidth()) { payer = it }
             }
             Field(tr("Note (optional)"), note, { if (it.length <= 2000) note = it }, singleLine = false)
-            if (account != null && type != EntryType.TRANSFER && (currency != account.currency || currency != budget.currency)) {
+            if (pair != null) {
                 TextButton({ showRates = !showRates }) {
                     Text(tr(if (showRates) "Hide manual rate" else "Manual exchange rate"))
                 }
-                if (showRates) {
-                    if (currency != account.currency) Field("Manual $currency → ${account.currency}", manualAccount, { manualAccount = it })
-                    if (currency != budget.currency)
-                        Field("Manual $currency → ${budget.currency}", manualBudget, { manualBudget = it })
-                }
+                if (showRates) Field("Manual $currency → ${pair.accountCurrency}", manualAccount, { manualAccount = it })
             }
         }
         Button(::submit, enabled = canSave, modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp).heightIn(min = 50.dp)) {

@@ -43,3 +43,5 @@ External CSV imports use a header row and a column-mapping dialog. Map at least 
 An external row's ID is used for duplicate detection. Without source IDs, each occurrence of an identical row in the file gets its own stable ID. Reimporting the same CSV keeps those distinct purchases without adding them again. Use JSON to carry transfers and their relationships.
 
 Use a full JSON backup to retain bank confirmation and rate-source metadata. CSV keeps its existing transaction columns.
+
+Version 1 JSON also carries the optional `budgetRateConfirmedAt` timestamp alongside the existing budget amount, rate, rate date, and rate source. A full restore keeps the confirmation. A merge preserves the recorded manual valuation for matching budget currencies and leaves the destination’s default rates independent.

@@ -40,6 +40,14 @@ interface LedgerDao {
         AND date <= :day ORDER BY date DESC, id DESC""")
     suspend fun bankEntries(budget: String, account: String, currency: String, accountCurrency: String,
                             direction: dev.sharedledger.domain.EntryType, day: String): List<Entry>
+    @Query("""SELECT budgetRate AS value, budgetRateDate AS date, budgetRateSource AS source FROM entries
+        WHERE budgetId = :budgetId AND accountId = :accountId AND currency = :original AND budgetCurrency = :budget
+        AND type = :direction AND deletedAt IS NULL AND date <= :day
+        AND budgetRateConfirmedAt IS NOT NULL AND budgetRateSource = 'User-defined'
+        AND budgetRate IS NOT NULL AND budgetRateDate IS NOT NULL AND (:except IS NULL OR id != :except)
+        ORDER BY date DESC, budgetRateConfirmedAt DESC, id DESC LIMIT 1""")
+    suspend fun latestBudgetRate(budgetId: String, accountId: String, original: String, budget: String,
+                                 direction: dev.sharedledger.domain.EntryType, day: String, except: String?): RateQuote?
     @Query("SELECT * FROM rules WHERE budgetId = :budget AND deletedAt IS NULL ORDER BY start")
     fun rulesFlow(budget: String): Flow<List<Rule>>
     @Query("SELECT * FROM rules WHERE budgetId = :budget")
@@ -148,7 +156,7 @@ interface LedgerDao {
     entities = [Budget::class, Account::class, Category::class, Entry::class, Rule::class, Rate::class, Member::class,
         Preferences::class, PendingChange::class, RemoteVersion::class, RateCheck::class, RateSyncRecord::class, ImportLink::class,
         BankLearningReset::class, SyncCheckpoint::class],
-    version = 6,
+    version = 7,
     exportSchema = true
 )
 @TypeConverters(BankConversionConverter::class)
@@ -156,6 +164,12 @@ abstract class LedgerDatabase : RoomDatabase() {
     abstract fun ledger(): LedgerDao
 
     companion object {
+        val MIGRATION_6_7 = object : androidx.room.migration.Migration(6, 7) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE entries ADD COLUMN budgetRateConfirmedAt INTEGER")
+            }
+        }
+
         val MIGRATION_5_6 = object : androidx.room.migration.Migration(5, 6) {
             override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE outbox ADD COLUMN principal TEXT")

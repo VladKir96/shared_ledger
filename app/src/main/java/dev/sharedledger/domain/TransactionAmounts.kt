@@ -2,13 +2,14 @@ package dev.sharedledger.domain
 
 import dev.sharedledger.data.BankSource
 import dev.sharedledger.data.Entry
+import dev.sharedledger.data.isManualBudgetRate
 import java.math.BigDecimal
 
 data class MonetaryLine(val value: BigDecimal, val currency: String, val approximate: Boolean = false)
 data class TransactionAmounts(val primary: MonetaryLine?, val secondary: List<MonetaryLine>)
 
 fun Entry.isBudgetApproximate(): Boolean = budgetAmount != null && currency != budgetCurrency &&
-    budgetRateSource?.startsWith("Manual") != true
+    !budgetRateSource.isManualBudgetRate()
 
 fun transactionAmounts(entry: Entry, selectedCurrency: String): TransactionAmounts {
     if (entry.type == EntryType.TRANSFER) return TransactionAmounts(

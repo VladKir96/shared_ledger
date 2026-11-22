@@ -27,7 +27,7 @@ data class EntryDraft(
     val type: EntryType, val amount: BigDecimal, val date: LocalDate, val accountId: String,
     val categoryId: String?, val currency: String, val note: String = "", val payer: String? = null,
     val destinationId: String? = null, val destinationAmount: BigDecimal? = null,
-    val accountRate: BigDecimal? = null, val budgetRate: BigDecimal? = null,
+    val accountRate: BigDecimal? = null, val budgetValuation: BudgetValuationEdit? = null,
     val bankAmount: BigDecimal? = null, val bankConfirmed: Boolean = false
 )
 
@@ -114,7 +114,7 @@ class LedgerRepository @Inject constructor(val db: LedgerDatabase, private val r
                 val conversion = rates.convert(entry.amount.decimal(), entry.currency, currency, LocalDate.parse(entry.date), false)
                 store(updated, entry.copy(budgetCurrency = currency, budgetAmount = conversion?.amount,
                     budgetRate = conversion?.rate, budgetRateDate = conversion?.date,
-                    budgetRateSource = conversion?.source, updatedAt = updated.updatedAt))
+                    budgetRateSource = conversion?.source, budgetRateConfirmedAt = null, updatedAt = updated.updatedAt))
             }
         }
     }
@@ -169,6 +169,19 @@ class LedgerRepository @Inject constructor(val db: LedgerDatabase, private val r
             dao.put((dao.preferences() ?: Preferences()).copy(lastAccount = account.id))
         }
 
+    internal suspend fun budgetRate(pair: BudgetRatePair, day: LocalDate, previous: Entry?, useReference: Boolean,
+                                    offline: Boolean): RateQuote? {
+        if (pair.original == pair.budget) return RateQuote("1", day.toString(), "Same currency")
+        if (!useReference) {
+            pair.recorded(previous, day)?.let { return it }
+            dao.latestBudgetRate(pair.budgetId, pair.accountId, pair.original, pair.budget, pair.direction, day.toString(), previous?.id)
+                ?.let { return it.copy(source = LAST_CONFIRMED_BUDGET_RATE) }
+        }
+        val quote = rates.cached(pair.original, pair.budget, day, allowOlder = offline, includeManual = !useReference)
+        return if (offline && quote != null && !quote.source.isManualBudgetRate())
+            quote.copy(source = (CACHED_BUDGET_RATE_PREFIX + quote.source).take(120)) else quote
+    }
+
     internal suspend fun prepare(budget: Budget, account: Account, draft: EntryDraft, old: Entry? = null,
                                  allowOlder: Boolean = false): Entry {
         val currency = draft.currency.validCurrency()
@@ -186,6 +199,7 @@ class LedgerRepository @Inject constructor(val db: LedgerDatabase, private val r
         val destinationAmount: BigDecimal?
         val category: String?
         var bankConversion: BankConversion? = null
+        var budgetRateConfirmedAt: Long? = null
         if (draft.type == EntryType.TRANSFER) {
             require(currency == account.currency) { "Use the source account's currency for a transfer." }
             destination = requireNotNull(draft.destinationId?.let { dao.account(it) }?.takeIf {
@@ -205,7 +219,8 @@ class LedgerRepository @Inject constructor(val db: LedgerDatabase, private val r
             category = selected.id
             destination = null
             destinationAmount = null
-            require(listOfNotNull(draft.accountRate, draft.budgetRate).all { it.signum() > 0 }) { "Exchange rates must be positive." }
+            require(draft.accountRate == null || draft.accountRate.signum() > 0) { "Exchange rates must be positive." }
+            require(currency != budget.currency || draft.budgetValuation == null) { "This transaction is already in the budget currency." }
             val sameAccount = old?.takeIf { it.accountId == account.id && it.currency == currency && it.type == draft.type }
             val sameAmount = old?.currency == currency && old.amount.decimal().compareTo(amount) == 0
             val preserved = sameAccount?.takeIf { sameAmount && it.bankConversion?.source == BankSource.BANK_ACTUAL }
@@ -215,11 +230,7 @@ class LedgerRepository @Inject constructor(val db: LedgerDatabase, private val r
             }
             val actual = draft.bankConfirmed || preserved != null
             val manual = draft.accountRate.takeIf { entered == null }
-            val plan = EntryRatePlan(currency, draft.date, account.currency, budget.currency, old)
-            val cache = plan.foreignTargets(manual, draft.budgetRate).associateWith { target ->
-                rates.cached(currency, target, draft.date, allowOlder)
-            }
-            val quotes = plan.quotes(cache, manual, draft.budgetRate)
+            val plan = EntryRatePlan(currency, draft.date, account.currency, budget.currency, sameAccount)
             val pair = BankPair(budget.id, account.id, currency, account.currency, draft.type)
             val storedAccount = sameAccount?.takeIf { it.date == day && sameAmount && entered == null && manual == null }
             accountConversion = when {
@@ -245,7 +256,7 @@ class LedgerRepository @Inject constructor(val db: LedgerDatabase, private val r
                         requireNotNull(storedAccount.accountRateDate), requireNotNull(storedAccount.accountRateSource))
                 }
                 manual != null -> {
-                    val quote = requireNotNull(quotes.account)
+                    val quote = requireNotNull(plan.accountQuote(null, manual))
                     val converted = quote.convert(amount, account.currency)
                     if (converted.decimal().signum() > 0) {
                         bankConversion = BankConversion(BankSource.MANUAL_RATE)
@@ -260,7 +271,7 @@ class LedgerRepository @Inject constructor(val db: LedgerDatabase, private val r
                     val estimate = offer?.amount(amount, account.currency)
                     bankConversion = offer?.conversion?.takeIf { estimate != null } ?: BankConversion(BankSource.PENDING)
                     if (offer != null && estimate != null) Conversion(estimate.storage(), offer.quote.value, offer.quote.date, offer.quote.source)
-                    else if (sameAccount != null && sameAccount.bankConversion == null) quotes.account?.let {
+                    else if (sameAccount != null && sameAccount.bankConversion == null) plan.accountQuote(null, null)?.let {
                         val converted = it.convert(amount, account.currency)
                         converted.takeIf { value -> value.decimal().signum() > 0 }?.let { value ->
                             bankConversion = null
@@ -269,11 +280,27 @@ class LedgerRepository @Inject constructor(val db: LedgerDatabase, private val r
                     } else null
                 }
             }
-            val storedBudget = old?.takeIf { sameAmount && it.date == day && it.budgetCurrency == budget.currency &&
-                it.budgetAmount != null && draft.budgetRate == null && (manual == null || budget.currency != account.currency) }
-            budgetConversion = if (storedBudget?.budgetAmount != null) Conversion(storedBudget.budgetAmount,
-                requireNotNull(storedBudget.budgetRate), requireNotNull(storedBudget.budgetRateDate), requireNotNull(storedBudget.budgetRateSource))
-            else quotes.budget?.let { Conversion(it.convert(amount, budget.currency), it.value, it.date, it.source) }
+            val budgetPair = BudgetRatePair(budget.id, account.id, currency, budget.currency, draft.type)
+            val recorded = budgetPair.recorded(old, draft.date)
+            val valuation = draft.budgetValuation
+            budgetConversion = if (valuation != null && valuation != BudgetValuationEdit.Reference) {
+                budgetRateConfirmedAt = System.currentTimeMillis()
+                requireNotNull(valuation.manualConversion(amount, budget.currency, draft.date)) {
+                    "Enter a positive budget amount within the currency’s precision and supported range."
+                }
+            } else {
+                val referenceOnly = valuation == BudgetValuationEdit.Reference
+                val quote = budgetRate(budgetPair, draft.date, old, referenceOnly, allowOlder)
+                require(!referenceOnly || quote != null) { "No reference rate is available for this date." }
+                if (!referenceOnly && recorded != null) budgetRateConfirmedAt = old?.budgetRateConfirmedAt
+                if (sameAmount && recorded != null && !referenceOnly) {
+                    Conversion(requireNotNull(old?.budgetAmount), recorded.value, recorded.date, recorded.source)
+                } else quote?.let {
+                    requireNotNull(it.budgetConversion(amount, budget.currency)?.takeIf { conversion ->
+                        budgetRateConfirmedAt == null || conversion.amount.decimal().signum() > 0
+                    }) { "The budget amount is outside the supported range." }
+                }
+            }
         }
         return Entry(old?.id ?: id(), budget.id, account.id, category, draft.type, amount.storage(), currency, account.currency,
             budget.currency, day, accountConversion?.amount, budgetConversion?.amount, accountConversion?.rate,
@@ -281,7 +308,8 @@ class LedgerRepository @Inject constructor(val db: LedgerDatabase, private val r
             budgetConversion?.source, draft.note.trim(), old?.creator ?: principal.value.takeIf { budget.principal != null }, payer,
             destination?.id, destination?.currency, destinationAmount?.storage(),
             destinationAmount?.divide(amount, MathContext.DECIMAL128)?.storage(), old?.ruleId,
-            old?.createdAt ?: System.currentTimeMillis(), System.currentTimeMillis(), bankConversion = bankConversion)
+            old?.createdAt ?: System.currentTimeMillis(), System.currentTimeMillis(), bankConversion = bankConversion,
+            budgetRateConfirmedAt = budgetRateConfirmedAt)
     }
 
     internal suspend fun backfillRates(entryId: String) = db.withTransaction {
@@ -294,12 +322,13 @@ class LedgerRepository @Inject constructor(val db: LedgerDatabase, private val r
             dao.pending("entry", current.id)?.remoteVersion != null) return@withTransaction
         val day = LocalDate.parse(current.date)
         val plan = EntryRatePlan(current.currency, day, current.accountCurrency, current.budgetCurrency, current)
-        val quotes = plan.quotes(plan.foreignTargets().associateWith { rates.cached(current.currency, it, day) }, null, null)
         val offer = if (current.accountAmount == null && current.accountCurrency != current.currency)
             bankRates.offer(BankPair(current.budgetId, current.accountId, current.currency, current.accountCurrency, current.type), day, current.id)
                 ?.takeIf { it.amount(current.amount.decimal(), current.accountCurrency) != null } else null
-        val preferred = offer?.quote ?: quotes.account.takeIf { current.bankConversion == null }
-        val filled = current.completeMissingRates(preferred, quotes.budget)
+        val preferred = offer?.quote ?: if (current.accountAmount == null && current.bankConversion == null)
+            plan.accountQuote(rates.cached(current.currency, current.accountCurrency, day), null) else null
+        val budgetQuote = if (current.budgetAmount == null) rates.cached(current.currency, current.budgetCurrency, day) else null
+        val filled = current.completeMissingRates(preferred, budgetQuote)
         val updated = if (offer != null) filled.copy(bankConversion = offer.conversion) else filled
         if (updated != current) store(budget, updated.copy(updatedAt = System.currentTimeMillis()), rateOnly = true)
     }

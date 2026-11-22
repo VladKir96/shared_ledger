@@ -84,9 +84,13 @@ When the transaction currency differs from the account currency, enter the origi
 
 History shows the budget amount first, followed by distinct account and original amounts. **≈** marks estimated budget valuations. **Settings → Exchange rates** shows the latest confirmation and its date. [Bank conversion guide](docs/setup-guide.md#recording-bank-conversions)
 
+## Set a budget valuation
+
+When the transaction currency differs from the budget currency, edit either the rate or the budget amount directly in **Budget valuation**. For example, a 100 USD income at 114 RSD per USD adds 100 USD to the account and 11,400 RSD to the budget. Saving an edited valuation remembers its rate for that budget, account, currency pair, and income or expense direction. **Use reference rate** restores the applicable provider quote for the transaction. [Budget valuation guide](docs/setup-guide.md#setting-a-budget-valuation)
+
 ## Sync transaction deletions
 
-Deleting an entry hides it immediately and queues the deletion. Supabase records a tombstone using the saved server amounts and relationships, and other devices hide the entry when they sync. Deploy pending database migrations through `202611220001` before syncing with this APK. Open **Settings → Cloud sync** to check pending and failed changes or select **Retry sync** after fixing a reported problem. [Database migration steps](docs/setup-guide.md#5-apply-and-verify-the-database-migrations) · [Deletion diagnostics and two-device checks](docs/verification.md#transaction-deletion-and-sync-recovery)
+Deleting an entry hides it immediately and queues the deletion. Supabase records a tombstone using the saved server amounts and relationships, and other devices hide the entry when they sync. Deploy pending database migrations through `202611220002` before syncing with this APK. Open **Settings → Cloud sync** to check pending and failed changes or select **Retry sync** after fixing a reported problem. [Database migration steps](docs/setup-guide.md#5-apply-and-verify-the-database-migrations) · [Deletion diagnostics and two-device checks](docs/verification.md#transaction-deletion-and-sync-recovery)
 
 ## Build artifacts and tests
 

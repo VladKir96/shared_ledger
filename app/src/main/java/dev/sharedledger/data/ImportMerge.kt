@@ -147,7 +147,7 @@ internal class ImportMerge(private val repo: LedgerRepository) {
                 ruleId = rule, payer = null, creator = null, amount = entry.amount.importDecimal(),
                 accountAmount = entry.accountAmount?.importDecimal(), budgetAmount = entry.budgetAmount?.importDecimal(),
                 destinationAmount = entry.destinationAmount?.importDecimal(),
-                bankConversion = entry.bankConversion?.copy(learningEligible = false))
+                bankConversion = entry.bankConversion?.copy(learningEligible = false), budgetRateConfirmedAt = null)
             require(taken.add(linked.id)) { "The file maps more than one transaction to the same record." }
             if (mapped.existing != null) {
                 if (mapped.existing.deletedAt == null && mapped.existing.sameImport(linked)) duplicates++
