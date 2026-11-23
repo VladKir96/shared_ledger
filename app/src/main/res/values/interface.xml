@@ -267,4 +267,12 @@
         <item quantity="one">Partial total · %d rate pending</item>
         <item quantity="other">Partial total · %d rates pending</item>
     </plurals>
+    <string name="chart_categories">Category breakdown</string>
+    <string name="chart_category_description">%1$s, %2$s, %3$s</string>
+    <string name="history_expand_all">Expand all</string>
+    <string name="history_collapse_all">Collapse all</string>
+    <string name="overview_show_all">Show all</string>
+    <string name="overview_clear_filters">Clear filters</string>
+    <string name="overview_pull">Pull to show all</string>
+    <string name="overview_release">Release to show all</string>
 </resources>

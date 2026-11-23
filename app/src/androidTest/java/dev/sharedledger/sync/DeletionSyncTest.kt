@@ -6,6 +6,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import dev.sharedledger.data.*
 import dev.sharedledger.domain.*
+import dev.sharedledger.presentation.slices
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.*
@@ -40,6 +41,7 @@ class DeletionSyncTest {
                     assertEquals(BigDecimal("21.5"), first.usdBalance())
                     assertEquals(BigDecimal("2500"), editor.totals().expenses)
                     assertEquals(BigDecimal("2500"), editor.groups().single().totals.expenses)
+                    assertEquals(BigDecimal("2500"), editor.expenseSlices().single().amount)
                     assertEquals(2, editor.groups().single().entries.size)
                     val entry = checkNotNull(first.dao.entry(EXPENSE))
                     val legacy = entry.copy(accountRateDate = null)
@@ -92,6 +94,7 @@ class DeletionSyncTest {
                         assertEquals(BigDecimal.ZERO, client.usdBalance())
                         assertEquals(BigDecimal.ZERO, client.totals().expenses)
                         assertTrue(client.groups().isEmpty())
+                        assertTrue(client.expenseSlices().isEmpty())
                         assertNull(client.repo.bankRates.offer(BankPair(BUDGET, ACCOUNT, "RSD", "USD", EntryType.EXPENSE), DAY))
                     }
                     assertEquals(3, server.writes.getValue(EXPENSE).size)
@@ -189,6 +192,7 @@ class DeletionSyncTest {
         suspend fun usdBalance(): BigDecimal = accountBalance(checkNotNull(dao.account(ACCOUNT)), dao.entries(BUDGET)).value
         suspend fun totals(): Totals = totals(dao.entries(BUDGET), "RSD")
         suspend fun groups() = transactionGroups(dao.entriesFlow(BUDGET).first(), "RSD", Entry::date)
+        suspend fun expenseSlices() = slices(dao.entriesFlow(BUDGET).first(), "RSD", EntryType.EXPENSE, dao.categories(BUDGET))
         suspend fun editExpense(note: String) =
             repo.saveEntry(BUDGET, EntryDraft(EntryType.EXPENSE, BigDecimal("2500"), DAY, ACCOUNT, CATEGORY, "RSD", note), EXPENSE)
         override fun close() = db.close()

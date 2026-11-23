@@ -271,4 +271,12 @@
         <item quantity="many">Неполный итог · не хватает %d курсов</item>
         <item quantity="other">Неполный итог · не хватает %d курса</item>
     </plurals>
+    <string name="chart_categories">Разбивка по категориям</string>
+    <string name="chart_category_description">%1$s, %2$s, %3$s</string>
+    <string name="history_expand_all">Развернуть все</string>
+    <string name="history_collapse_all">Свернуть все</string>
+    <string name="overview_show_all">Показать всё</string>
+    <string name="overview_clear_filters">Сбросить фильтры</string>
+    <string name="overview_pull">Потяните, чтобы показать всё</string>
+    <string name="overview_release">Отпустите, чтобы показать всё</string>
 </resources>

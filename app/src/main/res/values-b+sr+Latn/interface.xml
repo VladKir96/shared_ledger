@@ -269,4 +269,12 @@
         <item quantity="few">Delimičan zbir · nedostaju %d kursa</item>
         <item quantity="other">Delimičan zbir · nedostaje %d kurseva</item>
     </plurals>
+    <string name="chart_categories">Pregled kategorija</string>
+    <string name="chart_category_description">%1$s, %2$s, %3$s</string>
+    <string name="history_expand_all">Proširi sve</string>
+    <string name="history_collapse_all">Skupi sve</string>
+    <string name="overview_show_all">Prikaži sve</string>
+    <string name="overview_clear_filters">Obriši filtere</string>
+    <string name="overview_pull">Povuci za prikaz svega</string>
+    <string name="overview_release">Pusti za prikaz svega</string>
 </resources>

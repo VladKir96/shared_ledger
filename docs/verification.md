@@ -58,6 +58,12 @@ Room tests cover income and expenses, history across dates and scopes, refresh a
 
 The debug build passed 42 JVM tests and 36 Android 15 instrumented tests. Lint reported zero errors and five warnings. The group tests cover all four grouping modes, date ranges and filters, stored multi-currency valuations, partial totals, transfer amounts, and a 10,000-transaction group. The editor and history tests verify that collapsed totals update after create, edit, and delete. Room fixtures cover imports and remote snapshots. The history test also passed on a 320 dp Android viewport in dark mode with 125% font scaling.
 
+## Overview controls
+
+The debug build passed 48 JVM tests and 38 Android 15 instrumented tests. Lint reported zero errors and 17 existing code or dependency warnings. Chart tests cover 3, 7, 15, and 30 categories, proportional sectors, sub-percent shares, connector spacing and hit detection, saved multi-currency valuations, and changes received through Room sync. The overview UI tests also passed on a 320 dp dark-mode viewport with 200% font scaling and on a wide light-mode viewport.
+
+The UI tests exercise sector and label selection, a 30-category legend, group expansion with visible totals, and resetting by pull or button. They check that the largest categories retain labels, that selecting a previously unlabeled category shows its label and details, and that clearing the selection restores the priority labels. They also check that the gesture preserves the budget, period, and grouping, and leaves filters alone when the drag starts below the top or a text field is focused. Screenshots use synthetic budget data.
+
 ## Transaction deletion and sync recovery
 
 The linked hosted schema was inspected with read-only queries. The live `ledger_apply` body matched the original migration. The hosted project had versions through `202611210001` and no user-defined transaction trigger at the time of inspection. Its transaction columns use a default of 1 for `version`, and `deleted_at` is nullable.

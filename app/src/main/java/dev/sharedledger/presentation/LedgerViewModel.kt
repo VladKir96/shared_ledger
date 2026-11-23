@@ -63,8 +63,12 @@ class LedgerViewModel @Inject constructor(val repository: LedgerRepository, val 
 
     init { execute { repository.initialize() } }
 
-    fun select(id: String) = execute {
+    fun clearOverviewFilters() {
         filters.value = Filters()
+    }
+
+    fun select(id: String) = execute {
+        clearOverviewFilters()
         repository.preferences { it.copy(activeBudget = id) }
     }
 

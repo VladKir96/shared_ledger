@@ -7,7 +7,7 @@ SharedLedger is a native Android expense tracker for personal and shared budgets
 ## Features
 
 - Track income, expenses, accounts, categories, and transfers. Search transactions and compare balances and spending in Analytics.
-- See filtered totals in **Transactions** when grouping by date, category, account, or payer. [Read group totals](docs/setup-guide.md#read-transaction-group-totals)
+- Explore every valued category in the **Home** donut. In **Transactions**, expand or collapse all filtered groups while keeping their totals visible. Pull down from the top to clear temporary filters. [Overview controls](docs/setup-guide.md#explore-and-reset-the-overview)
 - Work offline with a local SQLite database. Cloud-enabled budgets queue edits locally and synchronize after reconnection.
 - Share budgets through one-use invitations. Owners manage access, Editors can record transactions, and Viewers have read-only access.
 - Preview conversions using automatically refreshed daily and historical rates. Supported starting currencies are RSD, EUR, RUB, USD, GBP, and CHF. Recorded conversions retain their rate and source, and manual overrides are available under **Settings → Exchange rates**. [Frankfurter v2](https://frankfurter.dev/) · [Currency API fallback](https://github.com/fawazahmed0/exchange-api)

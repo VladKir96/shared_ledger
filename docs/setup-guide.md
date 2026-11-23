@@ -465,9 +465,17 @@ where m.budget_id = 'YOUR_BUDGET_UUID'::uuid and m.user_id = 'USER_B_UUID'::uuid
 
 Look for one active membership with the intended role and a confirmation timestamp. The timestamp verifies email confirmation. A separate sign-in or refresh check verifies the Android session. The owner can check the invitation's expiry, revocation, and use count in **Cloud sync** or **Table Editor → invitations**. The database stores the code as a hash.
 
+### Explore and reset the overview
+
+The **Home** chart shows icons and percentages for the largest categories that fit. Tap any sector or its label to see its category name, amount, and share. These details move below the donut if they need more space. A selected category gets a label when space allows. **Category breakdown** opens the complete, scrollable legend, including categories without labels. **View transactions** opens the selected category with the current budget and period.
+
+With an active selection or filter, pull down from the top until **Release to show all** appears. The gesture clears the chart selection and restores the expense overview on Home. On Transactions, it clears the search query, category, account, payer, type, currency, and amount filters and restores the default sort. Both screens keep the selected budget and period. Transactions also keeps its grouping and the expansion state of existing groups. **Show all** and **Clear filters** offer the same reset without a gesture.
+
 ### Read transaction group totals
 
 In **Transactions**, choose a date range and select **Group by → Date, Category, Account, or Payer**. Each header shows the count and totals for the rows that match the current filters, including search. Tap the header to collapse the rows and keep the totals visible.
+
+Use **Expand all** or **Collapse all** to change the visible groups together. When some groups are open and others are collapsed, both actions are available. Groups hidden by filters keep their current expansion state. Changing the grouping or budget starts with the groups expanded.
 
 Mixed groups show income and expenses separately in the selected budget currency, using the valuations saved on each transaction. **≈** marks an estimated valuation. **Partial total** indicates that one or more transactions still need a budget conversion.
 
