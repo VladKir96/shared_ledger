@@ -12,3 +12,6 @@ enable_confirmations = true
 
 [functions.delete-account]
 verify_jwt = false
+
+[functions.dispatch-push]
+verify_jwt = false

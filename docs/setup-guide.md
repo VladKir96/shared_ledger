@@ -548,3 +548,101 @@ If a budget lost editing access, the owner must restore it before the affected u
 - **Backups.** Export JSON from **Settings → Import and export** to retain budget relationships and transfers. These export files contain financial data. Store them in encrypted or otherwise access-controlled storage and test restore with a separate installation or local budget. Android system backup is disabled for the app. For server-level backups, use your project's available backup tools and check restore procedures before production changes. [SharedLedger file formats](files.md) · [Supabase database backups](https://supabase.com/docs/guides/platform/backups)
 
 See the [data model](schema.md) for authorization and synchronization details. The [verification notes](verification.md) list the commands and flows already checked and the hosted deployment tests to run on your own project.
+
+## Firebase Push Notification Setup
+
+SharedLedger uses Firebase Cloud Messaging (FCM) for delivery and Supabase for sign-in, budget access, and notification settings. The Firebase configuration is optional. A build without it still supports local budgets and Supabase synchronization. Background delivery on compatible devices depends on Google Play services, Android permissions, and the device's background restrictions. SharedLedger uses Firebase Installation IDs for device registrations and refreshes them when they change.
+
+### Firebase Console
+
+1. Create a Firebase project on the Spark plan. Google Analytics is optional for this delivery flow. Leave Firestore and Realtime Database disabled.
+2. In **Project settings → General → Your apps**, add an Android app with package name `dev.sharedledger`. Download `google-services.json` to `app/google-services.json`. Gradle applies the Google Services plugin when this file exists.
+3. Verify that **Firebase Cloud Messaging API (V1)** is enabled in **Project settings → Cloud Messaging**. In the same project's Google Cloud IAM, create a dedicated service account with permission to send FCM messages, such as **Firebase Cloud Messaging API Admin**. Create a JSON key for that account and store it outside the repository. This server JSON is different from `app/google-services.json`.
+
+[Firebase Android setup](https://firebase.google.com/docs/android/setup) · [FCM HTTP v1 authorization](https://firebase.google.com/docs/cloud-messaging/send/v1-api) · [Firebase Installation ID registration](https://firebase.google.com/docs/cloud-messaging/android/get-started#access_the_firebase_installation_id)
+
+### Supabase Dashboard and CLI
+
+1. Verify the linked project and apply the versioned migration `202611230001_notifications.sql` using the existing CLI workflow.
+
+   ```sh
+   supabase migration list --linked
+   supabase db push --linked
+   supabase functions deploy dispatch-push --project-ref YOUR_PROJECT_REF
+   ```
+
+2. In **Edge Functions → Secrets**, set `FCM_SERVICE_ACCOUNT_JSON` to the full server JSON from Google Cloud. Set `PUSH_DISPATCH_SECRET` to a random 32-byte value encoded as hex. Generate it locally with `openssl rand -hex 32` and store it in your password manager. The dispatcher also uses the hosted Edge Function runtime's `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`. Keep these server credentials out of Android build configuration. The function checks the dispatch secret because the scheduled request has no user JWT.
+3. In **Vault → Secrets**, create `ledger_push_url` with the Supabase project's base HTTPS URL and `ledger_push_dispatch_secret` with the same dispatch secret. Open **SQL Editor**, run the contents of [schedule-push.sql](../supabase/scripts/schedule-push.sql), and check that **Cron → Jobs** lists `sharedledger-push` once per minute.
+4. Rebuild the APK with `app/google-services.json` and the same Supabase URL and publishable key on both test devices.
+
+[Supabase Edge Function secrets](https://supabase.com/docs/guides/functions/secrets) · [Scheduling Edge Functions](https://supabase.com/docs/guides/functions/schedule-functions)
+
+### Verify delivery on two devices
+
+1. Sign in as two distinct test users on two Android devices with Google Play services. Share a disposable budget, accept its invitation, and use **Settings → Notifications** to grant Android permissions. Give device registration time to finish while connected.
+2. Put device B in the background. On device A, record an expense and an income. After they sync, allow the next dispatch tick. Device B should receive both alerts. Other devices signed in as A should receive neither. A private lock screen shows generic budget activity by default.
+3. Turn off **New expenses** for B in that budget. Repeat and look for income only. Turn off **Enable push notifications**, then repeat and look for neither. Test an Android permission denial separately and use **Android notification settings** to change it later.
+4. Re-enable the preferences and create on A while offline. B should receive the alert only after A synchronizes. Resync and check that there is no second alert for the same logical creation. Tap a notification with B's original session, with its transaction deleted, and after removing B from the test budget. Expect a transaction, budget history, and a generic unavailable message, respectively.
+5. For operational diagnostics, inspect **Cron → Jobs** and the `dispatch-push` invocation logs. In SQL Editor, check `ledger_private.push_deliveries` by state and attempt count. The stored results distinguish provider acceptance, retries, invalid tokens, and ineligible devices. Provider acceptance alone cannot confirm that Android displayed the notification.
+
+## GitHub APK Update Setup
+
+### Configure the public release repository
+
+Use a public GitHub repository with stable releases. It can be a release-only repository if the source is private. A public HTTPS distribution service with a separately implemented provider is another option. An Android APK cannot keep a private GitHub token confidential.
+
+Create `updates.properties` in the root of this project. Set `UPDATE_GITHUB_REPOSITORY=OWNER/REPOSITORY` using the real public release repository. Leave the file absent for builds with the updater disabled. Signed release builds pin the certificate from the configured signing keystore. Debug builds leave updates disabled unless a tester explicitly supplies `UPDATE_SIGNER_SHA256`.
+
+[GitHub Releases API](https://docs.github.com/en/rest/releases/releases#get-the-latest-release)
+
+### Create and secure the release signing key
+
+Use JDK 17 and a private directory outside the repository. Create the key once and retain it for future builds.
+
+```sh
+umask 077
+ledger_signing_dir="$HOME/.config/sharedledger-signing"
+mkdir -p "$ledger_signing_dir"
+keytool -genkeypair -storetype PKCS12 -keystore "$ledger_signing_dir/release.p12" \
+  -alias sharedledger-release -keyalg RSA -keysize 3072 -validity 10000
+```
+
+Create `signing.properties` in that private directory with these four keys. Use the same password for both password entries when using the PKCS#12 store created above. Restrict the configuration and keystore to your account with `chmod 600`. Keep encrypted backups of the keystore and store the password in a password manager. Losing the key can prevent updating existing installations.
+
+```properties
+storeFile=release.p12
+storePassword=YOUR_KEYSTORE_PASSWORD
+keyAlias=sharedledger-release
+keyPassword=YOUR_KEYSTORE_PASSWORD
+```
+
+### Build and prepare a release
+
+1. Increase both Android versions in `app/build.gradle.kts`. Keep `applicationId = "dev.sharedledger"`. Make the version code greater than every release that users can already install.
+2. Load the private signing configuration and build the release. The debug APK and the signing test key are for development. Distribute the APK built with your dedicated release key.
+
+   ```sh
+   export RELEASE_SIGNING_FILE="$ledger_signing_dir/signing.properties"
+   ./gradlew testDebugUnitTest lintDebug
+   ./gradlew assembleRelease
+   "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs \
+     app/build/outputs/apk/release/app-release.apk
+   ```
+
+3. Obtain the trusted SHA-256 certificate fingerprint from the dedicated keystore with `keytool -list -v -keystore "$ledger_signing_dir/release.p12" -alias sharedledger-release`. Write release notes as one text line per change. Generate both upload assets from the assembled APK.
+
+   ```sh
+   python3 tools/prepare_release.py \
+     --build-tools "$ANDROID_HOME/build-tools/35.0.0" \
+     --signer YOUR_RELEASE_CERTIFICATE_SHA256 \
+     --notes /path/to/release-notes.txt
+   ```
+
+   The script verifies the signer using Android Build Tools and reads the package, version name, version code, and minimum SDK from the actual APK. It writes the named APK and matching `latest.json` into `app/build/releases/VERSION/`.
+
+4. In GitHub, draft a release in the configured public repository. Choose a tag, paste the release notes, and upload both files exactly as generated. Review before publishing it as a stable release and marking it latest. Confirm the APK and `latest.json` are downloadable while signed out. Keep the existing assets unchanged once published.
+5. On an older installation signed by the same key, open **Settings → About → App Updates → Check for updates**. Review the version and notes, confirm the download, then use **Install update**. Android may ask you to allow installation from SharedLedger. Return to the app after granting it and confirm in Android's package installer. Confirm the update preserved budgets, pending changes, and the Supabase session.
+
+### Migration from a differently signed APK
+
+Android rejects an in-place update from a differently signed APK. Before replacing a debug or other incompatible installation, export and verify a full SharedLedger JSON backup for every budget with data you need. Check that pending shared changes are synced and you can sign in again. After verifying those backups, manually uninstall the incompatible installation only if needed and install the dedicated release APK. Sign in and allow shared budgets to sync. Restore local-only budgets from the verified backups and verify balances and history. A JSON backup does not include login tokens. [Android app signing](https://developer.android.com/studio/publish/app-signing)

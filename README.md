@@ -12,6 +12,8 @@ SharedLedger is a native Android expense tracker for personal and shared budgets
 - Share budgets through one-use invitations. Owners manage access, Editors can record transactions, and Viewers have read-only access.
 - Preview conversions using automatically refreshed daily and historical rates. Supported starting currencies are RSD, EUR, RUB, USD, GBP, and CHF. Recorded conversions retain their rate and source, and manual overrides are available under **Settings → Exchange rates**. [Frankfurter v2](https://frankfurter.dev/) · [Currency API fallback](https://github.com/fawazahmed0/exchange-api)
 - Schedule recurring transactions and export budgets from **Settings → Import and export**. JSON preserves budget relationships and transfers. The [file format guide](docs/files.md) describes CSV mapping and import limits.
+- Receive configurable Android alerts for shared-budget expenses and income. [Firebase and Supabase push setup](docs/setup-guide.md#firebase-push-notification-setup)
+- Check for signed APK updates and open Android’s installer from **Settings → About → App Updates**. [GitHub releases and signing](docs/setup-guide.md#github-apk-update-setup)
 - Choose English, Russian, or Serbian for core interface labels. Some messages and default category names are in English. Currency amounts and dates follow the device format.
 
 ## Requirements

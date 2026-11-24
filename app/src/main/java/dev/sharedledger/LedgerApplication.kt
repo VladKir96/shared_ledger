@@ -16,13 +16,16 @@ import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
 import javax.inject.Inject
 import dev.sharedledger.sync.Background
+import dev.sharedledger.push.PushNotifications
 
 @HiltAndroidApp
 class LedgerApplication : Application() {
     @Inject lateinit var background: Background
+    @Inject lateinit var push: PushNotifications
     override fun onCreate() {
         super.onCreate()
         background.start()
+        push.start()
     }
 }
 

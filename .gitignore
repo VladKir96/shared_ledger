@@ -4,6 +4,11 @@
 **/build/
 local.properties
 cloud.properties
+updates.properties
+signing.properties
+google-services.json
+**/firebase-service-account*.json
+*-firebase-adminsdk-*.json
 *.jks
 *.keystore
 *.iml

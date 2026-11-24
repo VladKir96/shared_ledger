@@ -17,10 +17,15 @@ import dagger.hilt.android.AndroidEntryPoint
 import dev.sharedledger.presentation.LedgerApp
 import dev.sharedledger.presentation.LedgerViewModel
 import dev.sharedledger.sync.parseAuthLink
+import dev.sharedledger.push.PushNotifications
+import dev.sharedledger.push.isPushEvent
+import dev.sharedledger.updates.AppUpdates
 
 @AndroidEntryPoint
 class MainActivity : AppCompatActivity() {
     @Inject lateinit var background: Background
+    @Inject lateinit var push: PushNotifications
+    @Inject lateinit var updates: AppUpdates
     private val ledgerViewModel: LedgerViewModel by viewModels()
     private var incoming by mutableStateOf<Uri?>(null)
 
@@ -38,6 +43,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handleLink(intent: Intent) {
+        if (intent.action == PushNotifications.ACTION_PUSH) {
+            val event = intent.data?.lastPathSegment
+            intent.data = null
+            if (event != null && isPushEvent(event)) ledgerViewModel.acceptPush(event)
+            return
+        }
         if (intent.action != Intent.ACTION_VIEW) return
         val uri = intent.data ?: return
         val authLink = parseAuthLink(uri.toString())
@@ -52,5 +63,7 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         background.foreground()
+        push.enqueue()
+        updates.foreground()
     }
 }

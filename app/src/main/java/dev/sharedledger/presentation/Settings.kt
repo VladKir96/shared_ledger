@@ -26,14 +26,22 @@ import dev.sharedledger.domain.*
 import java.math.BigDecimal
 
 @Composable
-fun SettingsScreen(state: LedgerState, vm: LedgerViewModel, onBudgetJoined: () -> Unit) {
+fun SettingsScreen(state: LedgerState, vm: LedgerViewModel, openUpdates: Boolean = false,
+                   consumedUpdates: () -> Unit = {}, onBudgetJoined: () -> Unit) {
     var screen by rememberSaveable { mutableStateOf("") }
-    BackHandler(screen.isNotEmpty()) { screen = "" }
+    fun back() { screen = if (screen == "App Updates") "About" else "" }
+    BackHandler(screen.isNotEmpty(), ::back)
+    LaunchedEffect(openUpdates) {
+        if (openUpdates) {
+            screen = "App Updates"
+            consumedUpdates()
+        }
+    }
     fun toggle(name: String) { screen = name }
     if (screen.isNotEmpty()) {
         Column(Modifier.fillMaxSize()) {
             Row(Modifier.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton({ screen = "" }) { Icon(Icons.Outlined.ArrowBack, "Settings") }
+                IconButton(::back) { Icon(Icons.Outlined.ArrowBack, tr("Back")) }
                 Text(tr(screen), style = MaterialTheme.typography.headlineSmall)
             }
             when (screen) {
@@ -41,6 +49,11 @@ fun SettingsScreen(state: LedgerState, vm: LedgerViewModel, onBudgetJoined: () -
                 "Accounts" -> Accounts(state, vm)
                 "Categories" -> Categories(state, vm)
                 "Appearance" -> Appearance(state, vm)
+                "Notifications" -> NotificationSettings(state, vm)
+                "About" -> Column(Modifier.padding(18.dp)) {
+                    Panel { SettingsLink("App Updates", "Check and install new versions", Icons.Outlined.SystemUpdate, ::toggle) }
+                }
+                "App Updates" -> AppUpdateSettings(vm.updates)
                 else -> AdvancedSettings(screen, state, vm, onBudgetJoined)
             }
         }
@@ -58,7 +71,9 @@ fun SettingsScreen(state: LedgerState, vm: LedgerViewModel, onBudgetJoined: () -
         item {
             Panel {
                 SettingsLink("Appearance", "Theme and colors", Icons.Outlined.Palette, ::toggle)
+                SettingsLink("Notifications", "Shared budget activity", Icons.Outlined.Notifications, ::toggle)
                 PreferenceSettingsLinks(::toggle)
+                SettingsLink("About", "Version and updates", Icons.Outlined.Info, ::toggle)
             }
         }
     }

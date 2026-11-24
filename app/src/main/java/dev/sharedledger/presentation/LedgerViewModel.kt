@@ -19,6 +19,8 @@ import dev.sharedledger.sync.EmailPurpose
 import dev.sharedledger.sync.JoinedBudget
 import dev.sharedledger.sync.SyncEngine
 import dev.sharedledger.sync.RateNetwork
+import dev.sharedledger.push.PushNotifications
+import dev.sharedledger.updates.AppUpdates
 
 data class LedgerState(
     val budgets: List<Budget> = emptyList(), val budget: Budget? = null, val ledger: Ledger = Ledger(),
@@ -26,10 +28,12 @@ data class LedgerState(
     val entries: List<Entry> = emptyList(), val comparison: List<Entry> = emptyList(), val totals: Totals = Totals()
 )
 
+internal data class PushDestination(val budget: String, val user: String, val entry: String?)
+
 @OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class LedgerViewModel @Inject constructor(val repository: LedgerRepository, val auth: CloudAuth, val sync: SyncEngine, val recurring: Recurring, val portability: Portability,
-    val rates: Rates, val rateRefresh: RateRefresh, val rateNetwork: RateNetwork) : ViewModel() {
+    val rates: Rates, val rateRefresh: RateRefresh, val rateNetwork: RateNetwork, val push: PushNotifications, val updates: AppUpdates) : ViewModel() {
     private val events = Channel<String>(Channel.BUFFERED)
     val messages = events.receiveAsFlow()
     val busy = MutableStateFlow(false)
@@ -37,6 +41,8 @@ class LedgerViewModel @Inject constructor(val repository: LedgerRepository, val 
     val joiningInvitation = joining.asStateFlow()
     private val callback = MutableStateFlow<AuthCallback?>(null)
     val authCallback = callback.asStateFlow()
+    private val pushEvent = MutableStateFlow<String?>(null)
+    val pendingPush = pushEvent.asStateFlow()
     private var activeLink: AuthLink? = null
     private var nextLink: AuthLink? = null
     private var authJob: Job? = null
@@ -70,6 +76,25 @@ class LedgerViewModel @Inject constructor(val repository: LedgerRepository, val 
     fun select(id: String) = execute {
         clearOverviewFilters()
         repository.preferences { it.copy(activeBudget = id) }
+    }
+
+    fun acceptPush(event: String) { pushEvent.value = event }
+
+    fun clearPush(event: String) { pushEvent.compareAndSet(event, null) }
+
+    internal suspend fun openPush(event: String): PushDestination? {
+        auth.restore()
+        val user = auth.session.value?.userId ?: return null
+        push.details(event, user) ?: return null
+        sync.synchronize()
+        val details = push.details(event, user) ?: return null
+        val budget = repository.dao.budget(details.budgetId)?.takeIf { it.type == BudgetType.SHARED && it.principal == user } ?: return null
+        if (auth.session.value?.userId != user || pushEvent.value != event) return null
+        val entry = if (details.entryExists) repository.dao.entry(details.transactionId)
+            ?.takeIf { it.budgetId == budget.id && it.deletedAt == null } else null
+        clearOverviewFilters()
+        repository.preferences { it.copy(activeBudget = budget.id) }
+        return PushDestination(budget.id, user, entry?.id)
     }
 
     fun acceptInvitation(input: String, failed: (String) -> Unit, finished: (downloaded: Boolean) -> Unit) {

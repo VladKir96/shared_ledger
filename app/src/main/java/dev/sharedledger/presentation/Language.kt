@@ -7,6 +7,12 @@ import androidx.compose.ui.res.stringResource
 import dev.sharedledger.R
 
 private val labels = mapOf(
+    "Notifications" to R.string.delivery_notifications,
+    "Shared budget activity" to R.string.delivery_activity,
+    "About" to R.string.delivery_about,
+    "Version and updates" to R.string.delivery_version,
+    "App Updates" to R.string.delivery_updates,
+    "Check and install new versions" to R.string.delivery_update_summary,
     "Home" to R.string.ui_home,
     "Overview" to R.string.ui_overview,
     "Transactions" to R.string.ui_transactions,

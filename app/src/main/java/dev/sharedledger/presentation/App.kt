@@ -13,6 +13,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -21,6 +22,8 @@ import androidx.navigation.NavType
 import androidx.navigation.compose.*
 import androidx.navigation.navArgument
 import dev.sharedledger.domain.*
+import dev.sharedledger.R
+import kotlinx.coroutines.CancellationException
 
 private data class Tab(val route: String, val title: String, val icon: ImageVector)
 private val tabs = listOf(
@@ -34,11 +37,14 @@ private val tabs = listOf(
 fun LedgerApp(vm: LedgerViewModel, link: android.net.Uri? = null, clearLink: () -> Unit = {}) {
     val state by vm.state.collectAsStateWithLifecycle()
     val authCallback by vm.authCallback.collectAsStateWithLifecycle()
+    val pendingPush by vm.pendingPush.collectAsStateWithLifecycle()
+    val update by vm.updates.state.collectAsStateWithLifecycle()
     val nav = rememberNavController()
     val backStack by nav.currentBackStackEntryAsState()
     val route = backStack?.destination?.route
     val snackbar = remember { SnackbarHostState() }
     var entryDetails by rememberSaveable { mutableStateOf<String?>(null) }
+    var openUpdates by rememberSaveable { mutableStateOf(false) }
     fun edit(type: EntryType, id: String = "new", duplicate: Boolean = false, feeAccount: String? = null) =
         nav.navigate("entry/${type.name}/$id/$duplicate" + (feeAccount?.let { "?feeAccount=$it" } ?: ""))
     fun go(tab: String) = nav.navigate(tab) {
@@ -48,6 +54,25 @@ fun LedgerApp(vm: LedgerViewModel, link: android.net.Uri? = null, clearLink: () 
     }
     fun openCloud() { nav.navigate("cloud-auth") { launchSingleTop = true } }
     LaunchedEffect(vm) { vm.messages.collect { snackbar.showSnackbar(it, duration = SnackbarDuration.Short) } }
+    val pushUnavailable = stringResource(R.string.push_unavailable)
+    val pushEntryUnavailable = stringResource(R.string.push_entry_unavailable)
+    LaunchedEffect(pendingPush, authCallback) {
+        val event = pendingPush ?: return@LaunchedEffect
+        if (authCallback != null) return@LaunchedEffect
+        val destination = try { vm.openPush(event) } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) { null }
+        vm.clearPush(event)
+        if (destination != null && destination.user == vm.auth.session.value?.userId) {
+            entryDetails = destination.entry
+            go("history")
+            if (destination.entry == null) vm.notice(pushEntryUnavailable)
+        } else {
+            entryDetails = null
+            if (vm.auth.session.value == null) openCloud()
+            vm.notice(pushUnavailable)
+        }
+    }
     LedgerTheme(state.preferences.theme, state.preferences.dynamicColor) {
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
@@ -98,7 +123,9 @@ fun LedgerApp(vm: LedgerViewModel, link: android.net.Uri? = null, clearLink: () 
                         go("history")
                     }
                 }
-                composable("settings") { SettingsScreen(state, vm) { go("home") } }
+                composable("settings") {
+                    SettingsScreen(state, vm, openUpdates, { openUpdates = false }) { go("home") }
+                }
                 composable("cloud-auth") {
                     Column(Modifier.fillMaxSize()) {
                         Row(Modifier.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -124,6 +151,13 @@ fun LedgerApp(vm: LedgerViewModel, link: android.net.Uri? = null, clearLink: () 
         if (authState != null) {
             AuthCallbackDialog(authState, vm, ::openCloud)
         } else IncomingInvitation(link, vm, clearLink, ::openCloud) { go("home") }
+        if (authState == null && pendingPush == null && link == null && update.prompt) update.release?.let { release ->
+            UpdatePrompt(release, vm.updates::dismissPrompt) {
+                vm.updates.startDownload()
+                openUpdates = true
+                go("settings")
+            }
+        }
         val item = if (authState == null) state.ledger.entries.find { it.id == entryDetails } else null
         if (item != null) AlertDialog(
             onDismissRequest = { entryDetails = null },

@@ -123,3 +123,30 @@ Use two separate confirmed accounts on two Android devices connected to the same
 A cloud-configured debug APK was also clean-built and signature-verified. The embedded public configuration matched the local properties file, and the configured Auth settings endpoint returned HTTP 200. That check validates gateway access. Complete the [two-device walkthrough](setup-guide.md#11-create-and-join-a-shared-budget) on your own project to verify sign-in, sync, and Realtime. Independently test hosted confirmation and recovery email delivery and the deployed Edge Function using disposable accounts.
 
 The optional hosted integration check uses two existing confirmed accounts in a disposable project. Set `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `LEDGER_TEST_OWNER_EMAIL`, `LEDGER_TEST_OWNER_PASSWORD`, `LEDGER_TEST_EDITOR_EMAIL`, and `LEDGER_TEST_EDITOR_PASSWORD` in the command environment. Then run `python3 scripts/verify_cloud.py`. It creates and soft-deletes test budgets and checks real sign-in, session refresh, invitation and membership state, matching snapshots, conflicts, and revocation. To create disposable accounts automatically, run `python3 scripts/verify_cloud.py --local` against a separate loopback Supabase stack with email auto-confirmation enabled for that stack. Provide its local API URL as `SUPABASE_URL` and its local publishable or anon key as `SUPABASE_PUBLISHABLE_KEY`. The local test adds a third contender to exercise concurrent redemption.
+
+## Push notifications and APK updates
+
+The debug build passed 53 JVM tests and 39 instrumented tests on Android 15. Lint reported zero errors and 17 warnings. The suite ran offline with both optional configurations absent. The update tests used a newer same-signed APK and local HTTP response fixtures covering release parsing, metadata and signature rejection, GitHub rate limits, failed downloads, and cancellation.
+
+The Android test verified a real APK with the platform's package parser, then opened the standard installer using its app-private content URI. Cancel kept version code 2 installed. Confirming the update installed version code 3, and the existing Room expense and database integrity check passed afterward. Android also rejected an APK signed with a different key. A disposable release-signing fixture verified that the staging script extracts the version and minimum SDK and computes the SHA-256 from the signed APK. The test key is separate from the distribution signing key.
+
+All seven database SQL suites passed on a disposable PostgreSQL instance with Supabase authentication roles and claims emulated locally. The notification suite verifies event and delivery uniqueness, actor exclusion across devices, preference and membership changes, registration rotation, logout revocation, and access to deleted-transaction history. The Deno dispatcher test uses mocked FCM and Supabase responses to verify caller authorization, the data-only payload, retry handling, and invalid-token classification.
+
+```sh
+./gradlew testDebugUnitTest lintDebug
+./gradlew assembleDebug assembleDebugAndroidTest
+deno test --allow-env=PUSH_DISPATCH_SECRET,FCM_SERVICE_ACCOUNT_JSON,SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY \
+  supabase/functions/dispatch-push/dispatch_test.ts
+```
+
+To repeat the real-APK instrumentation test, build a newer APK in a scratch checkout using the same debug key as the installed test build. On a disposable emulator, install the older APK and its instrumented test APK, then stage the newer APK into app-private cache.
+
+```sh
+adb shell -T 'run-as dev.sharedledger sh -c "mkdir -p cache && cat > cache/update-fixture.apk"' < /path/to/newer.apk
+adb shell am instrument -w -e class dev.sharedledger.updates.UpdatePipelineTest \
+  -e updateFixtureSigner CERTIFICATE_SHA256 -e updateFixtureHash APK_SHA256 \
+  -e updateFixtureVersion NEW_VERSION_CODE -e updateFixtureVersionName NEW_VERSION_NAME \
+  dev.sharedledger.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+Add `-e openUpdateInstaller true` to exercise the actual installer after granting device permission. Use a synthetic local budget and verify it before and after the upgrade. Live FCM delivery requires deployed Supabase and Firebase configuration, and live release discovery requires a configured public GitHub release. [Firebase setup](setup-guide.md#firebase-push-notification-setup) · [APK update setup](setup-guide.md#github-apk-update-setup)
