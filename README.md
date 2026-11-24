@@ -13,7 +13,7 @@ SharedLedger is a native Android expense tracker for personal and shared budgets
 - Preview conversions using automatically refreshed daily and historical rates. Supported starting currencies are RSD, EUR, RUB, USD, GBP, and CHF. Recorded conversions retain their rate and source, and manual overrides are available under **Settings → Exchange rates**. [Frankfurter v2](https://frankfurter.dev/) · [Currency API fallback](https://github.com/fawazahmed0/exchange-api)
 - Schedule recurring transactions and export budgets from **Settings → Import and export**. JSON preserves budget relationships and transfers. The [file format guide](docs/files.md) describes CSV mapping and import limits.
 - Receive configurable Android alerts for shared-budget expenses and income. [Firebase and Supabase push setup](docs/setup-guide.md#firebase-push-notification-setup)
-- Check for signed APK updates and open Android’s installer from **Settings → About → App Updates**. [GitHub releases and signing](docs/setup-guide.md#github-apk-update-setup)
+- Check for signed APK updates and open Android’s installer from **Settings → About → App Updates**. [GitHub releases and signing](docs/setup-guide.md#building-and-publishing-sharedledger-releases)
 - Choose English, Russian, or Serbian for core interface labels. Some messages and default category names are in English. Currency amounts and dates follow the device format.
 
 ## Requirements
@@ -40,6 +40,22 @@ SharedLedger is a native Android expense tracker for personal and shared budgets
    In Windows PowerShell, run `.\gradlew.bat assembleDebug`. The first build downloads dependencies. Look for `BUILD SUCCESSFUL` and the file `app/build/outputs/apk/debug/app-debug.apk`.
 4. [Install the APK on a phone](docs/setup-guide.md#10-install-on-an-android-phone), or run the `app` configuration from Android Studio. On first launch, SharedLedger opens the **Personal** budget with a **Cash** account in RSD. Try **Expense → Choose category → Save expense**. **Settings → Cloud sync** shows **Local mode** in an offline-only build.
 
+## Building and Publishing SharedLedger Releases
+
+Configure the public release repository and your dedicated signing key once.
+
+```sh
+./scripts/setup-updates.sh
+```
+
+Build, test, sign, and stage the APK and its update manifest with one command.
+
+```sh
+./scripts/release.sh 0.3.0
+```
+
+Upload the two files from `build/sharedledger-releases/v0.3.0/` to GitHub Releases. [Signing, publishing, and update instructions](docs/setup-guide.md#building-and-publishing-sharedledger-releases)
+
 ## Set up shared budgets
 
 Follow the [hosted setup walkthrough](docs/setup-guide.md#2-create-a-hosted-supabase-project) in order. It covers the project URL and publishable key, the CLI, the database migrations, the account-deletion function, email setup, Realtime, and the cloud-enabled APK.
@@ -47,6 +63,12 @@ Follow the [hosted setup walkthrough](docs/setup-guide.md#2-create-a-hosted-supa
 - [Apply the migrations to the linked project](docs/setup-guide.md#5-apply-and-verify-the-database-migrations) if a CLI command tries to connect to `127.0.0.1:54322`.
 - [Configure the Android build](docs/setup-guide.md#8-configure-the-android-app) if **Cloud sync** shows **Local mode**. Gradle reads `cloud.properties` at build time, so changing the file requires rebuilding and installing the APK.
 - [Test with two devices](docs/setup-guide.md#11-create-and-join-a-shared-budget) using the same cloud-enabled build and two different accounts.
+
+## Shared-budget push notifications
+
+With a Firebase-enabled APK and Android notification permission, members can receive expense and income alerts for shared budgets. Supabase applies recipient preferences and excludes the account that made the change, including its other phones.
+
+For a hosted setup, apply migration `202611230001`, set the Firebase service-account JSON and dispatch authentication secret in Edge Function secrets, deploy `dispatch-push`, and create the `sharedledger-push` Cron job. The Firebase private key belongs in the Supabase worker's secrets. The Android build uses `app/google-services.json`. [Exact configuration commands and two-device tests](docs/setup-guide.md#firebase-push-notification-setup)
 
 ## Supabase Email Authentication and Android Deep Links
 

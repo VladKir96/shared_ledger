@@ -65,6 +65,12 @@ alter table ledger_private.push_devices enable row level security;
 alter table ledger_private.push_events enable row level security;
 alter table ledger_private.push_deliveries enable row level security;
 
+-- Hosted Postgres restricts custom settings. Suppress import pushes only for the transaction
+-- executing the import wrapper, through a marker clients cannot read or write.
+create table ledger_private.push_import_context (transaction_id xid8 primary key);
+alter table ledger_private.push_import_context enable row level security;
+revoke all on ledger_private.push_import_context from public, anon, authenticated;
+
 create function ledger_private.queue_push() returns trigger
 language plpgsql security definer set search_path='' as $$
 declare
@@ -72,7 +78,7 @@ declare
   event_kind text;
 begin
   if actor_id is null or new.type='TRANSFER' or
-     current_setting('sharedledger.importing',true)='yes' or
+     exists (select 1 from ledger_private.push_import_context where transaction_id=pg_current_xact_id()) or
      not exists (select 1 from public.budgets b where b.id=new.budget_id and b.type='SHARED' and b.deleted_at is null) then
     return new;
   end if;
@@ -104,9 +110,13 @@ alter function public.ledger_import_batch(uuid,jsonb) rename to ledger_import_ba
 alter function public.ledger_import_batch_records(uuid,jsonb) set schema ledger_private;
 revoke all on function ledger_private.ledger_import_batch_records(uuid,jsonb) from public, anon, authenticated;
 create function public.ledger_import_batch(p_budget uuid,p_changes jsonb) returns jsonb
-language plpgsql security definer set search_path='' set sharedledger.importing='yes' as $$
+language plpgsql security definer set search_path='' as $$
+declare result jsonb;
 begin
-  return ledger_private.ledger_import_batch_records(p_budget,p_changes);
+  insert into ledger_private.push_import_context(transaction_id) values(pg_current_xact_id());
+  result := ledger_private.ledger_import_batch_records(p_budget,p_changes);
+  delete from ledger_private.push_import_context where transaction_id=pg_current_xact_id();
+  return result;
 end $$;
 revoke all on function public.ledger_import_batch(uuid,jsonb) from public, anon, authenticated;
 grant execute on function public.ledger_import_batch(uuid,jsonb) to authenticated;

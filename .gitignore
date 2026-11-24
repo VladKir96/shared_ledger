@@ -11,5 +11,8 @@ google-services.json
 *-firebase-adminsdk-*.json
 *.jks
 *.keystore
+*.p12
+*.pfx
+__pycache__/
 *.iml
 .DS_Store

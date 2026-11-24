@@ -41,12 +41,12 @@ private data class UpdateCache(val repository: String, val release: UpdateReleas
 
 @Singleton
 class AppUpdates internal constructor(private val context: Context, client: OkHttpClient,
-                                      private val repository: String, signer: String) {
+                                      private val repository: String, signer: String, manifest: String = manifestUrl(repository)) {
     @Inject constructor(@ApplicationContext context: Context, client: OkHttpClient) :
-        this(context, client, BuildConfig.UPDATE_GITHUB_REPOSITORY, BuildConfig.UPDATE_SIGNER_SHA256)
+        this(context, client, BuildConfig.UPDATE_GITHUB_REPOSITORY, BuildConfig.UPDATE_SIGNER_SHA256, BuildConfig.UPDATE_MANIFEST_URL)
 
     val configured = repository.isNotBlank() && signer.matches(Regex("[0-9a-f]{64}"))
-    private val provider: UpdateProvider? = if (configured) GitHubUpdates(repository, client) else null
+    private val provider: UpdateProvider? = if (configured) GitHubUpdates(repository, client, manifest) else null
     private val verifier = VerifyApk(context, signer)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val prefs = context.getSharedPreferences("ledger.apk.updates", Context.MODE_PRIVATE)

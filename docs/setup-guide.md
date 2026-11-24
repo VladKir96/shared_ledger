@@ -184,8 +184,9 @@ A migration is a versioned SQL file that creates or updates the PostgreSQL schem
 | [`202611210003_bank_conversion.sql`](../supabase/migrations/202611210003_bank_conversion.sql) | Optional bank conversion metadata and protection for confirmed amounts during older-client edits |
 | [`202611220001_transaction_tombstones.sql`](../supabase/migrations/202611220001_transaction_tombstones.sql) | Canonical exchange-rate field names and versioned deletion that preserves server-side values |
 | [`202611220002_budget_valuation.sql`](../supabase/migrations/202611220002_budget_valuation.sql) | Budget valuation confirmation timestamp and compatibility with edits from older clients |
+| [`202611230001_notifications.sql`](../supabase/migrations/202611230001_notifications.sql) | Shared-budget notification preferences, device registration, outbox trigger, and dispatcher functions |
 
-1. From the repository root, preview the hosted migrations and check that the `Target` line names the intended project. A fresh project should list all seven files above. If you already deployed the transaction deletion migration, only `202611220002_budget_valuation.sql` should be pending.
+1. From the repository root, preview the hosted migrations and check that the `Target` line names the intended project. A fresh project should list all eight files above. A project through `202611220002_budget_valuation.sql` should list only the notifications migration.
 
    ```sh
    supabase db push --dry-run --remote
@@ -198,7 +199,7 @@ A migration is a versioned SQL file that creates or updates the PostgreSQL schem
    supabase migration list --remote
    ```
 
-3. Check that all seven migration versions through `202611220002` appear in both the **Local** and **Remote** columns. In the Supabase Dashboard for that project, open **Table Editor**, select the **public** schema, and look for `profiles`, `budgets`, `budget_memberships`, `accounts`, `categories`, `transactions`, `recurring_rules`, `exchange_rate_cache`, and `invitations`. Empty tables are expected before users and budgets are created.
+3. Check that all eight migration versions through `202611230001` appear in both the **Local** and **Remote** columns. In the Supabase Dashboard for that project, open **Table Editor**, select the **public** schema, and look for `profiles`, `budgets`, `budget_memberships`, `accounts`, `categories`, `transactions`, `recurring_rules`, `exchange_rate_cache`, and `invitations`. Empty tables are expected before users and budgets are created.
 
 ### If the CLI tries to connect to `127.0.0.1:54322`
 
@@ -219,7 +220,7 @@ A hosted push connects to the project's database over the network and works with
 
 ## 6. Deploy the account-deletion function
 
-The only Edge Function in this repository is [`delete-account`](../supabase/functions/delete-account/index.ts). From the linked repository root, deploy it using server-side bundling, then list deployed functions.
+[`delete-account`](../supabase/functions/delete-account/index.ts) handles the account-deletion flow. Deploy it using server-side bundling, then list deployed functions. For the separate notification worker, follow the [FCM setup](#firebase-push-notification-setup).
 
 ```sh
 supabase functions deploy delete-account --no-verify-jwt --use-api
@@ -551,98 +552,170 @@ See the [data model](schema.md) for authorization and synchronization details. T
 
 ## Firebase Push Notification Setup
 
-SharedLedger uses Firebase Cloud Messaging (FCM) for delivery and Supabase for sign-in, budget access, and notification settings. The Firebase configuration is optional. A build without it still supports local budgets and Supabase synchronization. Background delivery on compatible devices depends on Google Play services, Android permissions, and the device's background restrictions. SharedLedger uses Firebase Installation IDs for device registrations and refreshes them when they change.
+SharedLedger uses Supabase for sign-in, shared-budget access, preferences, and pending notifications. Firebase Cloud Messaging (FCM) carries a message containing only the notification event ID. Android fetches allowed details from Supabase before displaying it. Push is optional for local and cloud sync builds. On a phone it requires a Firebase-enabled build, Google Play services, and Android notification permission.
 
-### Firebase Console
+### 1. Check the Firebase project and server credentials
 
-1. Create a Firebase project on the Spark plan. Google Analytics is optional for this delivery flow. Leave Firestore and Realtime Database disabled.
-2. In **Project settings → General → Your apps**, add an Android app with package name `dev.sharedledger`. Download `google-services.json` to `app/google-services.json`. Gradle applies the Google Services plugin when this file exists.
-3. Verify that **Firebase Cloud Messaging API (V1)** is enabled in **Project settings → Cloud Messaging**. In the same project's Google Cloud IAM, create a dedicated service account with permission to send FCM messages, such as **Firebase Cloud Messaging API Admin**. Create a JSON key for that account and store it outside the repository. This server JSON is different from `app/google-services.json`.
+1. In Firebase **Project settings → General → Your apps**, confirm the registered Android package is `dev.sharedledger`. The downloaded Android client config belongs at `app/google-services.json`. The release APK already contains this configuration if it was built with that file.
+2. Under **Project settings → Cloud Messaging**, confirm **Firebase Cloud Messaging API (V1)** is enabled. The server service account must have permission to send to the same Firebase project as the app. For a dedicated sender, grant **Firebase Cloud Messaging API Admin** (`roles/firebasecloudmessaging.admin`) in Google Cloud IAM, or use an approved role with the HTTP v1 send permission.
+3. In **Project settings → Service accounts**, generate a private key for the server account you selected. For a dedicated Google Cloud service account, use **IAM & Admin → Service Accounts → your sender → Keys → Add key → Create new key → JSON**. Keep the downloaded JSON outside the checkout in a private location. On macOS or Linux, restrict file access with `chmod 600 "/path/to/firebase-service-account.json"`.
 
-[Firebase Android setup](https://firebase.google.com/docs/android/setup) · [FCM HTTP v1 authorization](https://firebase.google.com/docs/cloud-messaging/send/v1-api) · [Firebase Installation ID registration](https://firebase.google.com/docs/cloud-messaging/android/get-started#access_the_firebase_installation_id)
+The downloaded server JSON has `type` set to `service_account` and includes `project_id`, `client_email`, and a PKCS#8 PEM `private_key`. The Android JSON config identifies the client. Keep the service-account JSON out of the app, Git, screenshots, shell arguments, and logs. The worker uses the PEM key to sign an RS256 assertion for Google OAuth 2.0 with scope `https://www.googleapis.com/auth/firebase.messaging`. It exchanges that assertion for a short-lived token and sends a bearer-authenticated request to `https://fcm.googleapis.com/v1/projects/<FIREBASE_PROJECT_ID>/messages:send`. The target is a Firebase Installation ID (FID).
 
-### Supabase Dashboard and CLI
+[FCM HTTP v1 authentication](https://firebase.google.com/docs/cloud-messaging/send/v1-api) · [Google Cloud IAM roles](https://docs.cloud.google.com/iam/docs/roles-permissions/firebasecloudmessaging) · [Android registration](https://firebase.google.com/docs/cloud-messaging/android/get-started#access_the_firebase_installation_id)
 
-1. Verify the linked project and apply the versioned migration `202611230001_notifications.sql` using the existing CLI workflow.
+### 2. Preview and apply the database migration
 
-   ```sh
-   supabase migration list --linked
-   supabase db push --linked
-   supabase functions deploy dispatch-push --project-ref YOUR_PROJECT_REF
-   ```
-
-2. In **Edge Functions → Secrets**, set `FCM_SERVICE_ACCOUNT_JSON` to the full server JSON from Google Cloud. Set `PUSH_DISPATCH_SECRET` to a random 32-byte value encoded as hex. Generate it locally with `openssl rand -hex 32` and store it in your password manager. The dispatcher also uses the hosted Edge Function runtime's `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`. Keep these server credentials out of Android build configuration. The function checks the dispatch secret because the scheduled request has no user JWT.
-3. In **Vault → Secrets**, create `ledger_push_url` with the Supabase project's base HTTPS URL and `ledger_push_dispatch_secret` with the same dispatch secret. Open **SQL Editor**, run the contents of [schedule-push.sql](../supabase/scripts/schedule-push.sql), and check that **Cron → Jobs** lists `sharedledger-push` once per minute.
-4. Rebuild the APK with `app/google-services.json` and the same Supabase URL and publishable key on both test devices.
-
-[Supabase Edge Function secrets](https://supabase.com/docs/guides/functions/secrets) · [Scheduling Edge Functions](https://supabase.com/docs/guides/functions/schedule-functions)
-
-### Verify delivery on two devices
-
-1. Sign in as two distinct test users on two Android devices with Google Play services. Share a disposable budget, accept its invitation, and use **Settings → Notifications** to grant Android permissions. Give device registration time to finish while connected.
-2. Put device B in the background. On device A, record an expense and an income. After they sync, allow the next dispatch tick. Device B should receive both alerts. Other devices signed in as A should receive neither. A private lock screen shows generic budget activity by default.
-3. Turn off **New expenses** for B in that budget. Repeat and look for income only. Turn off **Enable push notifications**, then repeat and look for neither. Test an Android permission denial separately and use **Android notification settings** to change it later.
-4. Re-enable the preferences and create on A while offline. B should receive the alert only after A synchronizes. Resync and check that there is no second alert for the same logical creation. Tap a notification with B's original session, with its transaction deleted, and after removing B from the test budget. Expect a transaction, budget history, and a generic unavailable message, respectively.
-5. For operational diagnostics, inspect **Cron → Jobs** and the `dispatch-push` invocation logs. In SQL Editor, check `ledger_private.push_deliveries` by state and attempt count. The stored results distinguish provider acceptance, retries, invalid tokens, and ineligible devices. Provider acceptance alone cannot confirm that Android displayed the notification.
-
-## GitHub APK Update Setup
-
-### Configure the public release repository
-
-Use a public GitHub repository with stable releases. It can be a release-only repository if the source is private. A public HTTPS distribution service with a separately implemented provider is another option. An Android APK cannot keep a private GitHub token confidential.
-
-Create `updates.properties` in the root of this project. Set `UPDATE_GITHUB_REPOSITORY=OWNER/REPOSITORY` using the real public release repository. Leave the file absent for builds with the updater disabled. Signed release builds pin the certificate from the configured signing keystore. Debug builds leave updates disabled unless a tester explicitly supplies `UPDATE_SIGNER_SHA256`.
-
-[GitHub Releases API](https://docs.github.com/en/rest/releases/releases#get-the-latest-release)
-
-### Create and secure the release signing key
-
-Use JDK 17 and a private directory outside the repository. Create the key once and retain it for future builds.
+From the repository root, use Supabase CLI 3.x. Run `supabase login` if needed. If the checkout is unlinked, link it using the **Reference ID** from your Supabase Dashboard. For this SharedLedger project the ref is `fefgpzkfrvuybqyjnwtl`.
 
 ```sh
-umask 077
-ledger_signing_dir="$HOME/.config/sharedledger-signing"
-mkdir -p "$ledger_signing_dir"
-keytool -genkeypair -storetype PKCS12 -keystore "$ledger_signing_dir/release.p12" \
-  -alias sharedledger-release -keyalg RSA -keysize 3072 -validity 10000
+supabase link fefgpzkfrvuybqyjnwtl
+supabase migration list --remote
+supabase db push --remote --dry-run --skip-vault
 ```
 
-Create `signing.properties` in that private directory with these four keys. Use the same password for both password entries when using the PKCS#12 store created above. Restrict the configuration and keystore to your account with `chmod 600`. Keep encrypted backups of the keystore and store the password in a password manager. Losing the key can prevent updating existing installations.
+Check the target and pending file names before confirming a hosted change. For a project already through `202611220002`, the only pending file should be `202611230001_notifications.sql`. Apply it and confirm the version appears under **Remote**.
 
-```properties
-storeFile=release.p12
-storePassword=YOUR_KEYSTORE_PASSWORD
-keyAlias=sharedledger-release
-keyPassword=YOUR_KEYSTORE_PASSWORD
+```sh
+supabase db push --remote --skip-vault
+supabase migration list --remote
 ```
 
-### Build and prepare a release
+This migration creates the preference, device, event, and delivery tables. The trigger `queue_shared_budget_push` writes an outbox event when a member changes a shared-budget transaction through the app. The same database transaction commits the event and the ledger change. Private budgets, transfers, historical bulk imports, and valuation-only edits produce no push event. The trigger records the signed-in account as the actor. This architecture uses a trigger, an outbox, and one Cron job.
 
-1. Increase both Android versions in `app/build.gradle.kts`. Keep `applicationId = "dev.sharedledger"`. Make the version code greater than every release that users can already install.
-2. Load the private signing configuration and build the release. The debug APK and the signing test key are for development. Distribute the APK built with your dedicated release key.
+### 3. Add Edge Function secrets and deploy the worker
 
-   ```sh
-   export RELEASE_SIGNING_FILE="$ledger_signing_dir/signing.properties"
-   ./gradlew testDebugUnitTest lintDebug
-   ./gradlew assembleRelease
-   "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs \
-     app/build/outputs/apk/release/app-release.apk
-   ```
+In the linked Supabase project, open **Edge Functions → Secrets**. Add the two custom entries below. Open the private JSON locally and paste the entire JSON object into the trusted Dashboard secret field. Retain the JSON quotation marks and the escaped newline sequences inside `private_key`. Save it as raw JSON, with no outer quotes, base64 encoding, or file path. If using the CLI for rotation, use `supabase secrets set --remote --env-file /path/to/private.env` with a temporary mode-600 file and one compact JSON value. Keep the file outside the repo and remove it after a successful upload.
 
-3. Obtain the trusted SHA-256 certificate fingerprint from the dedicated keystore with `keytool -list -v -keystore "$ledger_signing_dir/release.p12" -alias sharedledger-release`. Write release notes as one text line per change. Generate both upload assets from the assembled APK.
+| Name | Expected value |
+| --- | --- |
+| `FCM_SERVICE_ACCOUNT_JSON` | The Google service-account JSON object, including `project_id`, `client_email`, and `private_key` |
+| `PUSH_DISPATCH_SECRET` | A random 32-byte secret encoded as 64 hexadecimal characters, with no whitespace. Keep it in your password manager so you can set the same value in Vault. |
+| `SUPABASE_URL` | The project base URL, provided by the hosted Edge Function runtime |
+| `SUPABASE_SERVICE_ROLE_KEY` | The runtime-provided Supabase service-role credential for privileged outbox RPCs |
 
-   ```sh
-   python3 tools/prepare_release.py \
-     --build-tools "$ANDROID_HOME/build-tools/35.0.0" \
-     --signer YOUR_RELEASE_CERTIFICATE_SHA256 \
-     --notes /path/to/release-notes.txt
-   ```
+Use a password manager or `openssl rand -hex 32` in a private terminal session to generate the dispatch secret. The project service-role key stays in the server runtime. The Android app uses its existing Supabase public key.
 
-   The script verifies the signer using Android Build Tools and reads the package, version name, version code, and minimum SDK from the actual APK. It writes the named APK and matching `latest.json` into `app/build/releases/VERSION/`.
+```sh
+supabase functions deploy dispatch-push --remote=fefgpzkfrvuybqyjnwtl --use-api --no-verify-jwt
+supabase functions list --remote=fefgpzkfrvuybqyjnwtl
+```
 
-4. In GitHub, draft a release in the configured public repository. Choose a tag, paste the release notes, and upload both files exactly as generated. Review before publishing it as a stable release and marking it latest. Confirm the APK and `latest.json` are downloadable while signed out. Keep the existing assets unchanged once published.
-5. On an older installation signed by the same key, open **Settings → About → App Updates → Check for updates**. Review the version and notes, confirm the download, then use **Install update**. Android may ask you to allow installation from SharedLedger. Return to the app after granting it and confirm in Android's package installer. Confirm the update preserved budgets, pending changes, and the Supabase session.
+The worker is `dispatch-push`. The independent `delete-account` function can stay as deployed. The gateway JWT check is off for the worker because Cron authenticates with the dedicated `x-ledger-dispatch` header. The worker accepts only POST and rejects a missing or wrong dispatch secret before accessing the queue.
+
+[Edge Function secrets](https://supabase.com/docs/guides/functions/secrets) · [Edge Function deployment](https://supabase.com/docs/guides/functions/deploy)
+
+### 4. Schedule and verify dispatch
+
+In **Vault → Secrets**, create these entries through the Dashboard:
+
+| Name | Expected value |
+| --- | --- |
+| `ledger_push_url` | `https://fefgpzkfrvuybqyjnwtl.supabase.co` for this project. Use the project base HTTPS URL with no trailing slash or function path. |
+| `ledger_push_dispatch_secret` | The same 64-character value as the Edge secret `PUSH_DISPATCH_SECRET` |
+
+Run [schedule-push.sql](../supabase/scripts/schedule-push.sql) from **SQL Editor**, or run this linked-project CLI command. The script enables the Cron and HTTP extensions and schedules the named worker once a minute. It reads the two values from Vault at runtime.
+
+```sh
+supabase db query --remote=fefgpzkfrvuybqyjnwtl --file supabase/scripts/schedule-push.sql
+```
+
+In **Cron → Jobs**, check that `sharedledger-push` is active at `* * * * *`. In **Edge Functions → dispatch-push → Invocations**, look for an HTTP 200 after a tick. An empty summary is expected when the queue is empty. A successful Cron entry confirms the HTTP request was queued. The Edge invocation confirms the worker actually ran.
+
+For eligible users, the worker creates one delivery per event and device, rechecks membership and preferences just before sending, and retries transient errors. The actor's account is excluded across all its devices. Database constraints prevent repeat queue rows for the same logical event or device, and the Android worker suppresses repeat displays of the same event ID. A retry after an uncertain provider response can still produce another FCM delivery attempt. Keep direct database access restricted to trusted operators, since the queued HTTP request briefly carries the dedicated dispatch header.
+
+[Supabase Vault](https://supabase.com/docs/guides/database/vault) · [Supabase Cron and HTTP scheduling](https://supabase.com/docs/guides/functions/schedule-functions)
+
+### 5. Test on two Android devices
+
+1. Install a Firebase-enabled SharedLedger build on two phones with Google Play services. Sign in as two distinct, email-confirmed users, A and B, on the same Supabase project. On each phone open **Settings → Notifications**, enable Android notifications when prompted, then return to the app online. SharedLedger registers the FID with the signed-in Supabase account via `ledger_push_bind`. It refreshes the registration when it changes and unbinds the previous installation on sign-out.
+2. On A, create a disposable **Shared** budget and invite B as an **Editor**. On B, join and check that the same budget appears. In **Settings → Notifications**, keep **Enable push notifications**, **New expenses**, and **New income** on. These delivery types default to on. Edit and deletion alerts default to off. Keep B's app in the background with notifications allowed.
+3. On A, add a new expense in the shared test budget and confirm it syncs. Wait for the next Cron tick. B should see one notification and A should see zero for that expense. Tap B's alert and check that it opens the correct transaction. Repeat with income. Then add an expense on B and verify A receives it while B receives no self-notification.
+4. On B, turn off **New expenses** for that budget. Add a new expense and income on A. Only the income should alert B. Then turn off B's global push toggle and repeat. Neither action should alert B. Re-enable both toggles. Denying SharedLedger notifications in Android should block alerts on that phone regardless of its Supabase preferences.
+5. Put A offline and create one expense. B should receive it only after A reconnects and the expense syncs. Trigger **Sync now** again for the same transaction and verify B receives no duplicate. Test a private-budget expense, a transfer, and a new expense after B is removed from the shared budget. None should notify B.
+6. To test a stale alert, leave one of B's alerts unopened, then delete its transaction on A. Tapping it on B should open the budget history. Remove B from the shared budget before tapping a different outstanding alert. SharedLedger should withhold transaction details.
+
+### Diagnose a missing notification
+
+Use the linked Supabase **SQL Editor** as the project operator. For device registration, replace the two placeholders with the user UUIDs from **Authentication → Users**. This query checks active bindings without returning FIDs or push secrets.
+
+```sql
+select user_id, count(*) filter (where active) as active_devices, max(seen_at) as last_bound_at
+from ledger_private.push_devices
+where user_id in ('USER_A_UUID'::uuid, 'USER_B_UUID'::uuid)
+group by user_id;
+```
+
+Each registered test account should have an active row with a recent bind. If one is missing, bring that phone back to the foreground online, check its signed-in account and Android notification permission, and allow time for registration. Once a shared-budget transaction has synced, check recent delivery outcomes without querying notification text or device IDs.
+
+```sql
+select e.kind, d.state, d.provider_result, d.provider_status, count(*)
+from ledger_private.push_events e
+join ledger_private.push_deliveries d on d.event_id = e.id
+where e.happened_at >= now() - interval '15 minutes'
+group by e.kind, d.state, d.provider_result, d.provider_status
+order by e.kind, d.state;
+```
+
+- **No delivery row.** Check the transaction synced to the shared budget, then check the recipient's active membership, FID binding, and preferences. The outbox does not backfill alerts for devices that were absent when a Cron tick expanded an event.
+- **Worker HTTP 403.** Check that the two dispatch secret values match exactly. Calls without the header are expected to fail.
+- **Worker HTTP 503.** Check service-account JSON formatting, OAuth and project permissions, then confirm the database migration is applied. Review only the worker status and sanitized summaries.
+- **FCM accepted a delivery.** A delivery in state `sent` confirms provider acceptance. To confirm Android displayed it, check the receiving phone and its notification permission/channel settings. A provider result of `unregistered` disables the stale device entry until the app registers again.
+
+## Building and Publishing SharedLedger Releases
+
+SharedLedger uses the package name `dev.sharedledger` and distributes signed APKs. Run these commands from the checkout. The release workflow reads from GitHub and stages assets locally. You publish them from the GitHub release page.
+
+### One-time setup
+
+```sh
+./scripts/setup-updates.sh
+```
+
+Setup detects the GitHub `origin` and checks that it is public. For a private source repository or a dedicated distribution repository, run `./scripts/setup-updates.sh --repo OWNER/REPOSITORY`. The configured repository and the stable HTTPS manifest URL are saved in the ignored root file `updates.properties`. The URL for the SharedLedger origin is `https://github.com/VladKir96/shared_ledger/releases/latest/download/latest.json`. Each release manifest points to the APK under its own version tag.
+
+Setup checks your existing SharedLedger key before offering to create one. When a key is missing, confirm the prompt or use `--generate-key` to confirm explicitly. On macOS it saves the keystore and signing properties under `~/Library/Application Support/SharedLedger/` and stores the password in the login Keychain under `dev.sharedledger.release-signing`. Re-running setup verifies the existing key. Keep an encrypted backup of the keystore and a recovery copy of the password in a password manager. Losing either can prevent compatible updates.
+
+To restore an existing SharedLedger signing identity, set `RELEASE_SIGNING_FILE` to its external, owner-only `signing.properties`. The file must identify the keystore with `storeFile` and `keyAlias`. It can use `keychainService` on macOS, or owner-only `storePassword` and `keyPassword` entries. Paths relative to the properties file are supported. Set both the configuration and keystore to mode 600. Keep this key dedicated to SharedLedger.
+
+The scripts look for JDK 17 and Android SDK Platform 35 with Build Tools 35.0.0. They check standard Android Studio and SDK locations, `JAVA_HOME`, `ANDROID_HOME`, `sdk.dir` in `local.properties`, and the private SharedLedger and Pocket FX tool directories. The fallback to Pocket FX reuses installed tools.
+
+### Build a signed release
+
+Production builds require `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` from [cloud.properties](../cloud.properties.example) or the corresponding environment variables. They also require `app/google-services.json` for `dev.sharedledger`. Keep Firebase service account JSON and Supabase server secrets outside the APK. [Firebase setup](#firebase-push-notification-setup)
+
+```sh
+./scripts/release.sh 0.3.0
+```
+
+Supply the new version as `X.Y.Z`. The script chooses an Android version code above the checked-in baseline, staged releases, published versions, and the versions it finds on connected Android devices. If you distributed an APK elsewhere, use `--version-code NUMBER` to reserve a code higher than that APK's code. To include release notes, add `--notes /path/to/release-notes.txt` with one line per change.
+
+The script runs the Python workflow tests, debug JVM tests, and lint, then builds the signed release with the Gradle wrapper, and verifies the packaged client configuration and certificate. For the first release the output is:
+
+```text
+build/sharedledger-releases/v0.3.0/sharedledger-0.3.0.apk
+build/sharedledger-releases/v0.3.0/latest.json
+```
+
+The generator reads the package, version name, version code, and minimum SDK from the signed APK. It computes the file size and SHA-256 and writes the tag-specific download URL. Keep a version's existing files if you rerun the same command. A new binary needs a new version.
+
+### Publish on GitHub and test the updater
+
+1. Open **Releases → Draft a new release** in the configured public repository. Create tag `v0.3.0` on the intended source commit and enter **SharedLedger 0.3.0** as the title.
+2. Attach `sharedledger-0.3.0.apk` and `latest.json` from the output directory. Add release notes, review both assets, then publish the release as **Latest** with prerelease disabled.
+3. Open the stable manifest URL while signed out. On an older APK signed with the same key and configured for that repository, use **Settings → About → App Updates → Check for updates**. Review the version and release notes, download the APK, then tap **Install update**. Android may ask for permission to install apps from SharedLedger. Return after granting it and confirm the standard installer.
+4. Confirm balances, history, shared-budget access, and pending sync after upgrading. The next normal build is `./scripts/release.sh 0.3.1`.
+
+[GitHub release asset links](https://docs.github.com/en/repositories/releasing-projects-on-github/linking-to-releases)
+
+### Release and installation errors
+
+- **Android tools unavailable.** Install JDK 17, Android Platform 35, and Build Tools 35.0.0, or configure their paths as described above.
+- **Signing password or keystore unavailable.** Recover the original files and Keychain item or restore them from your backup before building another release.
+- **GitHub returns 404.** Check that the update repository is public and that a stable latest release has both correctly named assets.
+- **Updater unavailable in debug.** A normal debug build has no trusted release certificate. To exercise the updater locally, use the instrumented test fixtures. [Verification instructions](verification.md)
+- **Download rejected.** Check that the uploaded APK and manifest came from the same output directory and that the APK uses the expected signing certificate and package. The updater also checks the minimum supported Android version.
 
 ### Migration from a differently signed APK
 
-Android rejects an in-place update from a differently signed APK. Before replacing a debug or other incompatible installation, export and verify a full SharedLedger JSON backup for every budget with data you need. Check that pending shared changes are synced and you can sign in again. After verifying those backups, manually uninstall the incompatible installation only if needed and install the dedicated release APK. Sign in and allow shared budgets to sync. Restore local-only budgets from the verified backups and verify balances and history. A JSON backup does not include login tokens. [Android app signing](https://developer.android.com/studio/publish/app-signing)
+Android rejects an in-place update when the signer differs. Before replacing an older debug installation, export and verify a full SharedLedger JSON backup for each budget you need. Complete all pending shared-budget sync, and verify shared budget history from another signed-in installation or with another member. Confirm you can sign in again. After verifying those backups, manually remove the incompatible installation if needed and install the signed release. Sign in and sync shared budgets, restore local-only budgets from the verified backups, and compare balances and transaction history. JSON backups exclude authentication tokens. [Android app signing](https://developer.android.com/studio/publish/app-signing)

@@ -22,7 +22,8 @@ import java.util.concurrent.TimeUnit
 class UpdatesTest {
     @get:Rule val temporary = TemporaryFolder()
     private val signer = "ab".repeat(32)
-    private val metadata = ApkMetadata("0.2.0", 2, 26, "sharedledger.apk", "a".repeat(64), listOf("Changes"))
+    private val apkUrl = "https://github.com/owner/repo/releases/download/v0.2.0/sharedledger-0.2.0.apk"
+    private val metadata = ApkMetadata("0.2.0", 2, "dev.sharedledger", 26, apkUrl, 3, "a".repeat(64), listOf("Changes"))
     private val installed = ApkIdentity("dev.sharedledger", "0.1.0", 1, 26, setOf(signer))
     private val expected = installed.copy(versionName = "0.2.0", version = 2)
 
@@ -42,15 +43,12 @@ class UpdatesTest {
 
     @Test fun latestUsesExplicitAndroidVersionAndDownloadsViaAnAllowedRedirect() = runBlocking {
         val client = intercepted { request ->
-            when (request.url.host) {
-                "api.github.com" -> {
-                    assertEquals("/repos/owner/repo/releases/latest", request.url.encodedPath)
-                    response(request, text = releaseJson)
-                }
-                "github.com" -> when (request.url.pathSegments.last()) {
-                    "latest.json" -> response(request, text = metadataJson)
-                    else -> response(request, 302, headers = mapOf("Location" to "https://release-assets.githubusercontent.com/object"))
-                }
+            when {
+                request.url.toString() == manifestUrl("owner/repo") -> response(request, 302,
+                    headers = mapOf("Location" to "../../download/v0.2.0/latest.json"))
+                request.url.encodedPath == "/owner/repo/releases/download/v0.2.0/latest.json" -> response(request, text = metadataJson)
+                request.url.toString() == apkUrl -> response(request, 302,
+                    headers = mapOf("Location" to "https://release-assets.githubusercontent.com/object"))
                 else -> response(request, text = "APK")
             }
         }
@@ -71,7 +69,7 @@ class UpdatesTest {
             "https://example.test/private")
         assertTrue(hosts.none { isAssetRedirect(it.toHttpUrl()) })
         assertFalse(isGitHubAsset("https://github.com/other/repo/releases/download/v/a.apk".toHttpUrl(), listOf("owner", "repo"), "a.apk"))
-        val release = UpdateRelease(metadata, "https://github.com/owner/repo/releases/download/v/sharedledger.apk", 3, "owner/repo")
+        val release = UpdateRelease(metadata, "owner/repo")
         val truncated = GitHubUpdates("owner/repo", intercepted { response(it, text = "AP") })
         val redirect = GitHubUpdates("owner/repo", intercepted { response(it, 302, headers = mapOf("Location" to hosts.last())) })
         for (updater in listOf(truncated, redirect)) {
@@ -105,7 +103,7 @@ class UpdatesTest {
         }.newBuilder().eventListener(object : EventListener() {
             override fun canceled(call: Call) { cancelled.countDown() }
         }).build()
-        val release = UpdateRelease(metadata, "https://github.com/owner/repo/releases/download/v/sharedledger.apk", 3, "owner/repo")
+        val release = UpdateRelease(metadata, "owner/repo")
         val file = temporary.newFile()
         val pending = launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
             GitHubUpdates("owner/repo", client).download(release, file) {}
@@ -122,10 +120,21 @@ class UpdatesTest {
         Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(code).message("fixture")
             .body(text.toResponseBody()).apply { headers.forEach { (key, value) -> header(key, value) } }.build()
 
-    private val releaseJson = """{"tag_name":"descriptive-tag","assets":[
-        {"name":"latest.json","size":274,"browser_download_url":"https://github.com/owner/repo/releases/download/descriptive-tag/latest.json"},
-        {"name":"sharedledger.apk","size":3,"browser_download_url":"https://github.com/owner/repo/releases/download/descriptive-tag/sharedledger.apk"}
-    ]}"""
-    private val metadataJson = """{"versionName":"0.2.0","versionCode":2,"minSdk":26,
-        "apkAsset":"sharedledger.apk","sha256":"${"a".repeat(64)}","releaseNotes":["Changes"]}"""
+    private val metadataJson = """{"versionName":"0.2.0","versionCode":2,"packageName":"dev.sharedledger","minSdk":26,
+        "apkUrl":"$apkUrl","apkSize":3,"sha256":"${"a".repeat(64)}","releaseNotes":["Changes"]}"""
+
+    @Test fun invalidManifestCannotPointOutsideItsVersionRepositoryAndPackage() = runBlocking {
+        val invalid = listOf(
+            metadataJson.replace("dev.sharedledger", "com.other.app"),
+            metadataJson.replace("owner/repo", "other/repo"),
+            metadataJson.replace("v0.2.0/", "v0.1.0/"),
+            metadataJson.replace("https://github.com", "http://github.com"),
+            metadataJson.replace("\"apkSize\":3", "\"apkSize\":0"),
+            """{"versionName":"""
+        )
+        invalid.forEach { content ->
+            val updater = GitHubUpdates("owner/repo", intercepted { response(it, text = content) })
+            assertTrue(runCatching { updater.latest() }.isFailure)
+        }
+    }
 }

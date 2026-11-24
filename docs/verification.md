@@ -149,4 +149,17 @@ adb shell am instrument -w -e class dev.sharedledger.updates.UpdatePipelineTest 
   dev.sharedledger.test/androidx.test.runner.AndroidJUnitRunner
 ```
 
-Add `-e openUpdateInstaller true` to exercise the actual installer after granting device permission. Use a synthetic local budget and verify it before and after the upgrade. Live FCM delivery requires deployed Supabase and Firebase configuration, and live release discovery requires a configured public GitHub release. [Firebase setup](setup-guide.md#firebase-push-notification-setup) · [APK update setup](setup-guide.md#github-apk-update-setup)
+Add `-e openUpdateInstaller true` to exercise the actual installer after granting device permission. Use a synthetic local budget and verify it before and after the upgrade. Live FCM delivery requires deployed Supabase and Firebase configuration, and live release discovery requires a configured public GitHub release. [Firebase setup](setup-guide.md#firebase-push-notification-setup) · [APK update setup](setup-guide.md#building-and-publishing-sharedledger-releases)
+
+## Signed GitHub releases
+
+The first production build is SharedLedger 0.3.0 with Android version code 3 and application ID `dev.sharedledger`. The release script verified the APK with Android Build Tools and checked that it carries the configured Supabase public values, Firebase Android client resources, stable manifest URL, and trusted certificate fingerprint. The actual release APK installed and opened to the Personal budget on an offline Android 15 emulator.
+
+Seven Python release workflow tests passed. The setup command was rerun using its default tool detection and returned the same certificate fingerprint. Repeating version 0.3.0 left the staged APK checksum unchanged. Reusing version code 3 for 0.3.1 was rejected. The release's Gradle run passed 54 JVM tests and lint with zero errors and 17 warnings. All 39 Android 15 instrumented tests passed. The standard installer upgraded the same-signed debug fixtures from version code 2 to 3 and preserved the synthetic expense and Room integrity. Android rejected the production APK as an in-place update over the old debug signer. Use these commands to repeat the local tests.
+
+```sh
+python3 -m unittest discover -s scripts/tests
+./gradlew testDebugUnitTest lintDebug
+```
+
+The public GitHub origin and its empty release history were verified with read-only requests. The stable manifest and the signed update remain available locally for manual publication. Live update discovery requires that publication. [Publication and signing guide](setup-guide.md#building-and-publishing-sharedledger-releases)

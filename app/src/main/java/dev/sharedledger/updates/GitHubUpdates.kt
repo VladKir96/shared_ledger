@@ -1,8 +1,8 @@
 package dev.sharedledger.updates
 
+import dev.sharedledger.BuildConfig
 import dev.sharedledger.data.ledgerJson
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import okhttp3.Call
 import okhttp3.Callback
@@ -25,18 +25,28 @@ import kotlin.coroutines.resumeWithException
 data class ApkMetadata(
     val versionName: String,
     val versionCode: Long,
+    val packageName: String,
     val minSdk: Int,
-    val apkAsset: String,
+    val apkUrl: String,
+    val apkSize: Long,
     val sha256: String,
     val releaseNotes: List<String> = emptyList()
 ) {
-    fun isValid() = versionCode in 1..2_100_000_000L && versionName.length in 1..64 && minSdk in 1..1_000 &&
-        apkAsset.matches(Regex("[a-zA-Z0-9._-]{1,120}\\.apk")) && sha256.matches(Regex("[0-9a-f]{64}")) &&
-        releaseNotes.size <= 30 && releaseNotes.all { it.length <= 400 }
+    val apkAsset get() = "sharedledger-$versionName.apk"
+
+    fun isValid() = versionCode in 1..2_100_000_000L && stableVersion.matches(versionName) &&
+        packageName == BuildConfig.APPLICATION_ID && minSdk in 1..1_000 && apkSize in 1..250L * 1024 * 1024 &&
+        sha256.matches(Regex("[0-9a-f]{64}")) && releaseNotes.size <= 30 && releaseNotes.all { it.length <= 400 }
+
+    companion object {
+        private val stableVersion = Regex("(0|[1-9][0-9]{0,18})\\.(0|[1-9][0-9]{0,18})\\.(0|[1-9][0-9]{0,18})")
+    }
 }
 
 @Serializable
-data class UpdateRelease(val metadata: ApkMetadata, val url: String, val size: Long, val repository: String)
+data class UpdateRelease(val metadata: ApkMetadata, val repository: String) {
+    val size get() = metadata.apkSize
+}
 
 internal interface UpdateProvider {
     suspend fun latest(): UpdateRelease?
@@ -46,44 +56,33 @@ internal interface UpdateProvider {
 internal class RateLimited(val until: Long) : IOException()
 internal class InvalidUpdate : IOException()
 
-@Serializable
-private data class ReleaseInfo(@SerialName("tag_name") val tag: String, val assets: List<ReleaseAsset>)
-@Serializable
-private data class ReleaseAsset(
-    val name: String, val size: Long, @SerialName("browser_download_url") val url: String
-)
+internal fun manifestUrl(repository: String) = "https://github.com/$repository/releases/latest/download/latest.json"
 
-internal class GitHubUpdates(repository: String, client: OkHttpClient) : UpdateProvider {
+internal class GitHubUpdates(private val repository: String, client: OkHttpClient, manifest: String = manifestUrl(repository)) : UpdateProvider {
     private val repo = repository.split('/')
+    private val manifest = manifest.toHttpUrl().also { require(it == manifestUrl(repository).toHttpUrl()) }
     private val client = client.newBuilder().followRedirects(false).followSslRedirects(false)
         .callTimeout(10, TimeUnit.MINUTES).readTimeout(25, TimeUnit.SECONDS).build()
-    private val api = "https://api.github.com/".toHttpUrl().newBuilder()
-        .addPathSegment("repos").addPathSegment(repo[0]).addPathSegment(repo[1])
-        .addPathSegments("releases/latest").build()
 
     override suspend fun latest(): UpdateRelease? {
-        val data = fetch(api, apiRequest = true) { response ->
-            // GitHub also uses 404 for a private or unpublished repository.
+        val metadata = fetch(manifest, readingManifest = true) { response ->
+            // An empty or private repository has no public latest asset.
             if (response.code == 404) return@fetch null
-            ledgerJson.decodeFromString<ReleaseInfo>(body(response).boundedText(1024 * 1024))
-        } ?: return null
-        val index = data.assets.singleOrNull { it.name == "latest.json" }
-            ?: throw InvalidUpdate()
-        if (index.size !in 1..65536) throw InvalidUpdate()
-        val indexUrl = assetUrl(index, data.tag)
-        val metadata = fetch(indexUrl) { response ->
             ledgerJson.decodeFromString<ApkMetadata>(body(response).boundedText(65536))
-        }
-        if (!metadata.isValid()) throw InvalidUpdate()
-        val apk = data.assets.singleOrNull { it.name == metadata.apkAsset && it.size in 1..MAX_APK }
-            ?: throw InvalidUpdate()
-        return UpdateRelease(metadata, assetUrl(apk, data.tag).toString(), apk.size, repo.joinToString("/"))
+        } ?: return null
+        if (trustedApk(metadata) == null) throw InvalidUpdate()
+        return UpdateRelease(metadata, repository)
+    }
+
+    private fun trustedApk(metadata: ApkMetadata): HttpUrl? {
+        if (!metadata.isValid()) return null
+        val url = metadata.apkUrl.toHttpUrlOrNull() ?: return null
+        return url.takeIf { isGitHubAsset(it, repo, metadata.apkAsset) && it.pathSegments[4] == "v${metadata.versionName}" }
     }
 
     override suspend fun download(release: UpdateRelease, target: File, progress: (Long) -> Unit) {
-        val url = release.url.toHttpUrlOrNull() ?: throw InvalidUpdate()
-        if (!release.metadata.isValid() || release.size !in 1..MAX_APK || release.repository != repo.joinToString("/") ||
-            !isGitHubAsset(url, repo, release.metadata.apkAsset)) throw InvalidUpdate()
+        if (release.repository != repository) throw InvalidUpdate()
+        val url = trustedApk(release.metadata) ?: throw InvalidUpdate()
         fetch(url) { response ->
             val body = body(response)
             if (body.contentLength() >= 0 && body.contentLength() != release.size) throw InvalidUpdate()
@@ -111,24 +110,17 @@ internal class GitHubUpdates(repository: String, client: OkHttpClient) : UpdateP
         }
     }
 
-    private fun assetUrl(asset: ReleaseAsset, tag: String): HttpUrl {
-        val url = asset.url.toHttpUrlOrNull() ?: throw InvalidUpdate()
-        if (!isGitHubAsset(url, repo, asset.name) || url.pathSegments[4] != tag) throw InvalidUpdate()
-        return url
-    }
-
-    private suspend fun <T> fetch(url: HttpUrl, apiRequest: Boolean = false, consume: (Response) -> T): T {
+    private suspend fun <T> fetch(url: HttpUrl, readingManifest: Boolean = false, consume: (Response) -> T): T {
         var target = url
         repeat(5) {
-            val request = Request.Builder().url(target)
-                .header("Accept", if (apiRequest) "application/vnd.github+json" else "application/octet-stream")
-            if (apiRequest) request.header("X-GitHub-Api-Version", "2022-11-28")
+            val request = Request.Builder().url(target).header("Accept", "application/octet-stream")
             val result = client.newCall(request.build()).await { response ->
                 when {
                     response.code in REDIRECTS -> {
-                        if (apiRequest) throw InvalidUpdate()
-                        val next = target.resolve(response.header("Location") ?: "") ?: throw InvalidUpdate()
-                        if (!isAssetRedirect(next)) throw InvalidUpdate()
+                        val location = response.header("Location") ?: throw InvalidUpdate()
+                        val next = target.resolve(location) ?: throw InvalidUpdate()
+                        val taggedManifest = readingManifest && target == manifest && isGitHubAsset(next, repo, "latest.json")
+                        if (!taggedManifest && !isAssetRedirect(next)) throw InvalidUpdate()
                         FetchResult.Redirect(next)
                     }
                     response.code == 429 || response.code == 403 &&
@@ -156,7 +148,6 @@ internal class GitHubUpdates(repository: String, client: OkHttpClient) : UpdateP
     }
 
     companion object {
-        private const val MAX_APK = 250L * 1024 * 1024
         private val REDIRECTS = setOf(301, 302, 303, 307, 308)
     }
 }

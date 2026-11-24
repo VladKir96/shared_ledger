@@ -22,6 +22,16 @@ val updateRepository = updateSetting("UPDATE_GITHUB_REPOSITORY")
 require(updateRepository.isEmpty() || updateRepository.matches(Regex("[A-Za-z0-9-]+/[A-Za-z0-9_.-]+"))) {
     "UPDATE_GITHUB_REPOSITORY must be OWNER/REPOSITORY."
 }
+val updateManifest = if (updateRepository.isEmpty()) "" else "https://github.com/$updateRepository/releases/latest/download/latest.json"
+val configuredManifest = updateSetting("UPDATE_MANIFEST_URL")
+require(configuredManifest.isEmpty() || configuredManifest == updateManifest) { "UPDATE_MANIFEST_URL must match the configured GitHub repository." }
+val distribution = providers.gradleProperty("sharedLedgerDistribution").orNull == "true"
+val releaseCode = providers.gradleProperty("sharedLedgerReleaseVersionCode").orNull
+val releaseName = providers.gradleProperty("sharedLedgerReleaseVersionName").orNull
+require((releaseCode == null) == (releaseName == null)) { "Set both Android release versions together." }
+val buildCode = (releaseCode ?: providers.gradleProperty("sharedLedgerBaseVersionCode").get()).toInt()
+val buildName = releaseName ?: providers.gradleProperty("sharedLedgerBaseVersionName").get()
+require(buildCode in 1..2_100_000_000 && buildName.matches(Regex("(0|[1-9][0-9]{0,18})\\.(0|[1-9][0-9]{0,18})\\.(0|[1-9][0-9]{0,18})")))
 val debugUpdateSigner = updateSetting("UPDATE_SIGNER_SHA256").lowercase()
 require(debugUpdateSigner.isEmpty() || debugUpdateSigner.matches(Regex("[0-9a-f]{64}")))
 val signingFile = providers.environmentVariable("RELEASE_SIGNING_FILE").orNull?.let { file(it).canonicalFile }
@@ -34,10 +44,14 @@ val releaseStore = releaseKeys?.let { keys ->
         require(!path.toPath().startsWith(rootDir.canonicalFile.toPath())) { "Store the release keystore outside the repository." }
     }
 }
+val storeSecret = providers.environmentVariable("SHAREDLEDGER_STORE_PASSWORD").orNull ?: releaseKeys?.getProperty("storePassword")
+val keySecret = providers.environmentVariable("SHAREDLEDGER_KEY_PASSWORD").orNull ?: releaseKeys?.getProperty("keyPassword")
 val releaseSigner = releaseStore?.let { path ->
     val keys = requireNotNull(releaseKeys)
-    val store = KeyStore.getInstance(path, keys.getProperty("storePassword").toCharArray())
-    require(store.isKeyEntry(keys.getProperty("keyAlias"))) { "The release alias must identify a signing key." }
+    val store = KeyStore.getInstance(path, requireNotNull(storeSecret) { "Release store password is unavailable." }.toCharArray())
+    require(store.getKey(keys.getProperty("keyAlias"), requireNotNull(keySecret).toCharArray()) is java.security.PrivateKey) {
+        "The release alias must identify a signing key."
+    }
     val certificate = store.getCertificate(keys.getProperty("keyAlias"))
     MessageDigest.getInstance("SHA-256").digest(certificate.encoded).joinToString("") { "%02x".format(it) }
 }.orEmpty()
@@ -56,6 +70,16 @@ fun config(name: String): String {
     return "\"" + value + "\""
 }
 
+if (distribution) {
+    require(releaseName != null && releaseSigner.isNotEmpty() && updateManifest.isNotEmpty()) {
+        "Distribution requires release versions, signing, and a GitHub repository."
+    }
+    require(config("SUPABASE_URL").startsWith("\"https://") && config("SUPABASE_PUBLISHABLE_KEY") != "\"\"") {
+        "Distribution requires the Supabase HTTPS URL and publishable key."
+    }
+    require(file("google-services.json").isFile) { "Distribution requires app/google-services.json for dev.sharedledger." }
+}
+
 fun isLegacyAnonKey(value: String): Boolean = runCatching {
     val payload = String(Base64.getUrlDecoder().decode(value.split(".")[1]), Charsets.UTF_8)
     Regex("""["]role["]\s*:\s*["]anon["]""").containsMatchIn(payload)
@@ -68,12 +92,13 @@ android {
         applicationId = "dev.sharedledger"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = buildCode
+        versionName = buildName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "SUPABASE_URL", config("SUPABASE_URL"))
         buildConfigField("String", "SUPABASE_PUBLISHABLE_KEY", config("SUPABASE_PUBLISHABLE_KEY"))
         buildConfigField("String", "UPDATE_GITHUB_REPOSITORY", "\"$updateRepository\"")
+        buildConfigField("String", "UPDATE_MANIFEST_URL", "\"$updateManifest\"")
     }
     sourceSets.getByName("androidTest").assets.srcDir("$projectDir/schemas")
     buildFeatures { compose = true; buildConfig = true }
@@ -83,9 +108,9 @@ android {
     }
     if (releaseKeys != null) signingConfigs.create("stableRelease") {
         storeFile = releaseStore
-        storePassword = releaseKeys.getProperty("storePassword")
+        storePassword = storeSecret
         keyAlias = releaseKeys.getProperty("keyAlias")
-        keyPassword = releaseKeys.getProperty("keyPassword")
+        keyPassword = keySecret
     }
     buildTypes {
         debug { buildConfigField("String", "UPDATE_SIGNER_SHA256", "\"$debugUpdateSigner\"") }

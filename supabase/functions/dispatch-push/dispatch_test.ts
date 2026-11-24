@@ -4,6 +4,11 @@ function expect(condition: boolean, message: string) {
   if (!condition) throw new Error(message);
 }
 
+function decodeSegment(segment: string): Uint8Array<ArrayBuffer> {
+  const base64 = segment.replaceAll("-", "+").replaceAll("_", "/").padEnd(Math.ceil(segment.length / 4) * 4, "=");
+  return Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
+}
+
 Deno.test("dispatcher protects the queue, sends only an ID, and classifies provider responses", async () => {
   const savedFetch = globalThis.fetch;
   const names = ["PUSH_DISPATCH_SECRET", "FCM_SERVICE_ACCOUNT_JSON", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"];
@@ -22,16 +27,29 @@ Deno.test("dispatcher protects the queue, sends only an ID, and classifies provi
   Deno.env.set("SUPABASE_SERVICE_ROLE_KEY", "local-only-test");
   let calls = 0;
   const finishes: Record<string, unknown>[] = [];
-  globalThis.fetch = ((input: string, init: RequestInit) => {
+  globalThis.fetch = (async (input: string, init: RequestInit) => {
     calls++;
     const url = new URL(input);
     if (url.host === "oauth2.googleapis.com") {
-      expect(init.body instanceof URLSearchParams &&
-        (init.body.get("assertion")?.split(".").length ?? 0) === 3, "OAuth JWT missing");
+      if (!(init.body instanceof URLSearchParams)) throw new Error("OAuth request was not form encoded");
+      expect(init.method === "POST" && url.pathname === "/token", "Unexpected OAuth exchange endpoint");
+      expect(init.body.get("grant_type") === "urn:ietf:params:oauth:grant-type:jwt-bearer", "Wrong OAuth grant");
+      const [header, payload, signature, extra] = init.body.get("assertion")?.split(".") ?? [];
+      if (!header || !payload || !signature || extra !== undefined) throw new Error("OAuth JWT missing");
+      const decoder = new TextDecoder();
+      const claims = JSON.parse(decoder.decode(decodeSegment(payload)));
+      expect(JSON.parse(decoder.decode(decodeSegment(header))).alg === "RS256", "Wrong assertion algorithm");
+      expect(claims.iss === "fixture@example.test" && claims.aud === url.href &&
+        claims.scope === "https://www.googleapis.com/auth/firebase.messaging" && claims.exp - claims.iat === 3600,
+        "Unexpected OAuth assertion claims");
+      expect(await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key.publicKey, decodeSegment(signature),
+        new TextEncoder().encode(`${header}.${payload}`)), "Invalid OAuth assertion signature");
       return Promise.resolve(Response.json({ access_token: "local-access", expires_in: 3600 }));
     }
     const body = JSON.parse(String(init.body));
     if (url.host === "fcm.googleapis.com") {
+      expect(url.pathname === "/v1/projects/local-fixture/messages:send" && init.method === "POST" &&
+        new Headers(init.headers).get("Authorization") === "Bearer local-access", "Wrong authenticated FCM request");
       expect(Object.keys(body.message.data).join() === "ledger_event", "Unexpected data in FCM payload");
       expect(!body.message.notification, "FCM contained notification details");
       if (body.message.fid === "token-a") {

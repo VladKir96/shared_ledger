@@ -40,18 +40,13 @@ class UpdatePipelineTest {
         assertTrue(apk.isFile)
         val requests = AtomicInteger()
         val repository = "fixture/sharedledger"
-        val address = "https://github.com/$repository/releases/download/test"
-        val index = """{"versionName":"$versionName","versionCode":$version,
-            "minSdk":26,"apkAsset":"update.apk","sha256":"$hash","releaseNotes":["Test update"]}"""
-        val release = """{"tag_name":"test","assets":[
-            {"name":"latest.json","size":${index.length},"browser_download_url":"$address/latest.json"},
-            {"name":"update.apk","size":${apk.length()},"browser_download_url":"$address/update.apk"}
-        ]}"""
+        val index = """{"versionName":"$versionName","versionCode":$version,"packageName":"dev.sharedledger",
+            "minSdk":26,"apkUrl":"https://github.com/$repository/releases/download/v$versionName/sharedledger-$versionName.apk",
+            "apkSize":${apk.length()},"sha256":"$hash","releaseNotes":["Test update"]}"""
         val client = OkHttpClient.Builder().addInterceptor { chain ->
             requests.incrementAndGet()
             val request = chain.request()
             val body = when {
-                request.url.host == "api.github.com" -> release.toResponseBody()
                 request.url.pathSegments.last() == "latest.json" -> index.toResponseBody()
                 else -> apk.source().buffer().asResponseBody(contentLength = apk.length())
             }

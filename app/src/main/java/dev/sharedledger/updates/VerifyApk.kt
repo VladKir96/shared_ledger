@@ -16,7 +16,7 @@ internal fun verifyIdentity(
     expected: ApkMetadata, actual: ApkIdentity, installed: ApkIdentity, pinnedSigner: String, sdk: Int
 ): Boolean = pinnedSigner.matches(Regex("[0-9a-f]{64}")) &&
     expected.isValid() && installed.signers == setOf(pinnedSigner) && actual.signers == setOf(pinnedSigner) &&
-    actual.packageName == installed.packageName && actual.version == expected.versionCode &&
+    expected.packageName == installed.packageName && actual.packageName == installed.packageName && actual.version == expected.versionCode &&
     actual.versionName == expected.versionName &&
     actual.version > installed.version && actual.minimumSdk == expected.minSdk && actual.minimumSdk <= sdk
 
