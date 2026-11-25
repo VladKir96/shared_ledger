@@ -468,17 +468,21 @@ Look for one active membership with the intended role and a confirmation timesta
 
 ### Explore and reset the overview
 
-The **Home** chart shows icons and percentages for the largest categories that fit. Tap any sector or its label to see its category name, amount, and share. These details move below the donut if they need more space. A selected category gets a label when space allows. **Category breakdown** opens the complete, scrollable legend, including categories without labels. **View transactions** opens the selected category with the current budget and period.
+The **Home** chart shows icons and percentages for the largest categories that fit. Swipe left across the chart to show income and right to show expenses. The **Expenses** and **Income** buttons do the same thing. Switching clears the category selection and keeps the current budget, period, account, and member filters. Swiping across the date bar still changes the period.
+
+Tap any sector or its label to see its category name, amount, and share. These details move below the donut if they need more space. A selected category gets a label when space allows. **Category breakdown** opens the complete, scrollable legend, including categories without labels. **View transactions** opens the selected category with the current budget and period.
 
 With an active selection or filter, pull down from the top until **Release to show all** appears. The gesture clears the chart selection and restores the expense overview on Home. On Transactions, it clears the search query, category, account, payer, type, currency, and amount filters and restores the default sort. Both screens keep the selected budget and period. Transactions also keeps its grouping and the expansion state of existing groups. **Show all** and **Clear filters** offer the same reset without a gesture.
 
 ### Read transaction group totals
 
-In **Transactions**, choose a date range and select **Group by → Date, Category, Account, or Payer**. Each header shows the count and totals for the rows that match the current filters, including search. Tap the header to collapse the rows and keep the totals visible.
+In **Transactions**, choose a date range and select **Group by → Date, Category, Account, or Payer**. Groups start collapsed when you open Transactions or change the grouping or budget. Each header shows the count and totals for the rows that match the current filters, including search. Tap a header to show or hide its transactions.
 
-Use **Expand all** or **Collapse all** to change the visible groups together. When some groups are open and others are collapsed, both actions are available. Groups hidden by filters keep their current expansion state. Changing the grouping or budget starts with the groups expanded.
+Use **Expand all** or **Collapse all** to change the visible groups together. When some groups are open and others are collapsed, both actions are available. Groups hidden by filters keep their current expansion state. Sorting and sync preserve which groups are open. New groups start collapsed unless you selected **Expand all**.
 
-Mixed groups show income and expenses separately in the selected budget currency, using the valuations saved on each transaction. **≈** marks an estimated valuation. **Partial total** indicates that one or more transactions still need a budget conversion.
+**Sort by** offers newest and oldest dates for **Date** grouping and name order for **Category**, **Account**, and **Payer**. Amount sorting in **Category** keeps income categories first, then expense categories ordered by spending magnitude, followed by transfers. Amount sorting in the other modes uses expenses only. Days with only income have zero expenses, and days tied on expenses appear newest first.
+
+Mixed groups show income and expenses separately in the selected budget currency, using the valuations saved on each transaction. **≈** marks an estimated valuation. **Partial total** indicates that one or more transactions still need a budget conversion. Amount sorting uses the subtotal available so far. A group whose relevant amounts are all pending follows groups with known amounts.
 
 Transfers count as transactions and are excluded from income and expenses. A transfer-only group shows the amount sent in each source currency. Account groups show filtered activity for the source account. For account balances, use **Settings → Accounts**.
 

@@ -62,8 +62,8 @@ class TransactionGroupsUiTest {
             assertHeader(day, expenseLine("4800"))
             assertHeader(day, "Partial total · 1 rate pending")
             ui.onNodeWithContentDescription("4 transactions", useUnmergedTree = true).assertExists()
-            click(ui.onNodeWithTag("history-group-$day"))
-            awaitAbsent(hasText(food.name))
+            ui.onNodeWithTag("history-group-$day").assert(hasStateDescription("Collapsed"))
+            ui.onNodeWithText(food.name).assertDoesNotExist()
             assertHeader(day, expenseLine("4800"))
 
             val created = runBlocking {

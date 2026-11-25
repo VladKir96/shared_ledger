@@ -45,12 +45,16 @@ fun LedgerApp(vm: LedgerViewModel, link: android.net.Uri? = null, clearLink: () 
     val snackbar = remember { SnackbarHostState() }
     var entryDetails by rememberSaveable { mutableStateOf<String?>(null) }
     var openUpdates by rememberSaveable { mutableStateOf(false) }
+    var historyVisit by rememberSaveable { mutableIntStateOf(0) }
     fun edit(type: EntryType, id: String = "new", duplicate: Boolean = false, feeAccount: String? = null) =
         nav.navigate("entry/${type.name}/$id/$duplicate" + (feeAccount?.let { "?feeAccount=$it" } ?: ""))
-    fun go(tab: String) = nav.navigate(tab) {
-        popUpTo(nav.graph.findStartDestination().id) { saveState = true }
-        launchSingleTop = true
-        restoreState = true
+    fun go(tab: String) {
+        if (tab == "history" && nav.currentDestination?.route != tab) historyVisit++
+        nav.navigate(tab) {
+            popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+            launchSingleTop = true
+            restoreState = true
+        }
     }
     fun openCloud() { nav.navigate("cloud-auth") { launchSingleTop = true } }
     LaunchedEffect(vm) { vm.messages.collect { snackbar.showSnackbar(it, duration = SnackbarDuration.Short) } }
@@ -116,7 +120,7 @@ fun LedgerApp(vm: LedgerViewModel, link: android.net.Uri? = null, clearLink: () 
                         go("history")
                     }
                 }
-                composable("history") { HistoryScreen(state, vm) { entryDetails = it.id } }
+                composable("history") { HistoryScreen(state, vm, historyVisit) { entryDetails = it.id } }
                 composable("analytics") {
                     AnalyticsScreen(state, vm) { type, category ->
                         vm.filters.value = state.filters.copy(type = type, category = category)

@@ -1,7 +1,6 @@
 package dev.sharedledger.domain
 
 import dev.sharedledger.data.Entry
-import dev.sharedledger.presentation.GroupBy
 import org.junit.Assert.*
 import org.junit.Test
 import java.math.BigDecimal
@@ -106,6 +105,66 @@ class TransactionGroupsTest {
         assertTrue(groups(GroupBy.DATE, emptyList()).isEmpty())
         assertTrue(groups(GroupBy.CATEGORY, rows.map { it.copy(deletedAt = 1) }).isEmpty())
     }
+
+    @Test fun categoryAmountSortingUsesTotalsAndKeepsIncomeBeforeExpenses() {
+        val entries = rows + listOf(
+            salary.copy(id = "salary-two", amount = "10000", budgetAmount = "10000"),
+            salary.copy(id = "rent", categoryId = "rent", amount = "50000", budgetAmount = "50000"),
+            groceryExpense("travel", "6000"),
+            groceryExpense("coffee-expense", "200"),
+            groceryExpense("deleted", "100000").copy(deletedAt = 1),
+            groceryExpense("unknown", "100000").copy(budgetCurrency = "USD"),
+            usdPurchase.copy(id = "part-of-food", budgetAmount = null),
+        )
+        assertEquals(listOf("salary", "rent", "food", "travel", "coffee-expense", "unknown", GroupBy.TRANSFERS),
+            order(GroupBy.CATEGORY, GroupSort.AMOUNT_HIGH, entries))
+        assertEquals(listOf("rent", "salary", "coffee-expense", "travel", "food", "unknown", GroupBy.TRANSFERS),
+            order(GroupBy.CATEGORY, GroupSort.AMOUNT_LOW, entries))
+    }
+
+    @Test fun dateSortingUsesExpensesWithIncomeOnlyAsZeroAndNewestDateBreakingTies() {
+        val recent = day.plusDays(1).toString()
+        val previous = day.minusDays(1).toString()
+        val incomeOnly = day.minusDays(2).toString()
+        val pending = day.minusDays(3).toString()
+        val entries = rows + listOf(
+            usdPurchase.copy(id = "same-spend", date = recent, budgetAmount = "4800"),
+            salary.copy(id = "large-income", date = previous, budgetAmount = "500000"),
+            salary.copy(id = "income-only", date = incomeOnly),
+            usdPurchase.copy(id = "unknown", date = pending, budgetAmount = null),
+        )
+        assertEquals(listOf(recent, day.toString(), previous, incomeOnly, pending),
+            order(GroupBy.DATE, GroupSort.AMOUNT_HIGH, entries))
+        assertEquals(listOf(incomeOnly, previous, recent, day.toString(), pending),
+            order(GroupBy.DATE, GroupSort.AMOUNT_LOW, entries))
+        assertEquals(listOf(pending, incomeOnly, previous, day.toString(), recent),
+            order(GroupBy.DATE, GroupSort.OLDEST, entries))
+        assertEquals(listOf(recent, day.toString(), previous, incomeOnly, pending),
+            order(GroupBy.DATE, GroupSort.NEWEST, entries))
+    }
+
+    @Test fun spendingSortInOtherModesReactsToFilteredAndUpdatedRowsUsingStoredCurrencyAmounts() {
+        assertEquals(listOf("cash", "debit"), order(GroupBy.ACCOUNT, GroupSort.AMOUNT_HIGH, rows))
+        assertEquals(listOf("alex", "jo"), order(GroupBy.PAYER, GroupSort.AMOUNT_HIGH, rows))
+        val updated = rows.map { if (it.id == usdPurchase.id) it.copy(budgetAmount = "5100", budgetRateSource = "Manual") else it }
+        assertEquals(listOf("debit", "cash"), order(GroupBy.ACCOUNT, GroupSort.AMOUNT_HIGH, updated))
+        val joOnly = filterEntries(updated, DateSpan(), Filters(payer = "jo"), emptyMap(), "RSD")
+        assertEquals(listOf("cash", "debit"), order(GroupBy.ACCOUNT, GroupSort.AMOUNT_HIGH, joOnly))
+        val names = mapOf("cash" to "Wallet", "debit" to "Bank")
+        val accounts = groups(GroupBy.ACCOUNT).values.toList()
+        assertEquals(listOf("debit", "cash"), sortTransactionGroups(accounts, GroupBy.ACCOUNT, GroupSort.NAME_ASC, names).map { it.key })
+        assertEquals(listOf("cash", "debit"), sortTransactionGroups(accounts, GroupBy.ACCOUNT, GroupSort.NAME_DESC, names).map { it.key })
+        assertEquals(GroupSort.AMOUNT_HIGH, GroupBy.PAYER.compatibleSort(GroupSort.AMOUNT_HIGH))
+        assertEquals(GroupSort.NAME_ASC, GroupBy.CATEGORY.compatibleSort(GroupSort.NEWEST))
+        assertEquals(GroupSort.NEWEST, GroupBy.DATE.compatibleSort(GroupSort.NAME_DESC))
+    }
+
+    private fun groceryExpense(category: String, amount: String) = groceries.copy(
+        id = category, categoryId = category, amount = amount, budgetAmount = amount
+    )
+
+    private fun order(mode: GroupBy, sort: GroupSort, entries: List<Entry>) =
+        sortTransactionGroups(transactionGroups(entries, "RSD", mode::key), mode, sort).map { it.key }
 
     private fun groups(mode: GroupBy, entries: List<Entry> = rows) =
         transactionGroups(entries, "RSD", mode::key).associateBy { it.key }

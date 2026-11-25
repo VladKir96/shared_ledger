@@ -91,7 +91,8 @@ fun HomeScreen(state: LedgerState, vm: LedgerViewModel, openEntry: (Entry) -> Un
                 }
             }
             item("home-chart") {
-                Distribution(state.entries, budget.currency, state.ledger.categories, openHistory, chart, ::resetOverview)
+                Distribution(state.entries, budget.currency, state.ledger.categories, openHistory, chart, ::resetOverview,
+                    swipeEnabled = true)
             }
             item {
                 Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp))
@@ -136,32 +137,53 @@ private fun SummaryFigure(label: String, value: String, tint: Color, modifier: M
     }
 }
 
-enum class GroupBy {
-    DATE, CATEGORY, ACCOUNT, PAYER;
-
-    fun key(entry: Entry): String = when (this) {
-        DATE -> entry.date
-        CATEGORY -> entry.categoryId ?: "transfer"
-        ACCOUNT -> entry.accountId
-        PAYER -> entry.payer.orEmpty()
-    }
-}
-
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun HistoryScreen(state: LedgerState, vm: LedgerViewModel, openEntry: (Entry) -> Unit) {
-    var group by rememberSaveable { mutableStateOf(GroupBy.DATE) }
+fun HistoryScreen(state: LedgerState, vm: LedgerViewModel, visit: Int, openEntry: (Entry) -> Unit) {
+    val groupSelection = rememberSaveable { mutableStateOf(GroupBy.DATE) }
+    val sortSelection = rememberSaveable { mutableStateOf(GroupSort.NEWEST) }
+    val group = groupSelection.value
+    val sort = group.compatibleSort(sortSelection.value)
     var expandedFilters by rememberSaveable { mutableStateOf(false) }
     val budget = state.budget
     val currency = budget?.currency ?: state.preferences.defaultCurrency
-    var collapsed by remember(group, budget?.id) { mutableStateOf(setOf<String>()) }
+    val expansionScope = "$visit/${group.name}/${budget?.id.orEmpty()}"
+    val expansionState = rememberSaveable(expansionScope, stateSaver = GroupExpansion.Saver) {
+        mutableStateOf(GroupExpansion(scope = expansionScope))
+    }
+    val expansion = expansionState.value.takeIf { it.scope == expansionScope } ?: GroupExpansion(scope = expansionScope)
     val names = remember(state.ledger.categories) { state.ledger.categories.associate { it.id to it.name } }
     val accounts = remember(state.ledger.accounts) { state.ledger.accounts.associate { it.id to it.name } }
     val members = remember(state.ledger.members) { state.ledger.members.associate { it.userId to it.name } }
-    val grouping = remember(state.entries, group, currency) { transactionGroups(state.entries, currency, group::key) }
-    val displayedKeys = remember(grouping) { grouping.map { it.key }.toSet() }
-    val anyCollapsed = displayedKeys.any { it in collapsed }
-    val anyExpanded = displayedKeys.any { it !in collapsed }
+    val aggregated = remember(state.entries, group, currency) { transactionGroups(state.entries, currency, group::key) }
+    val otherLabel = when (group) {
+        GroupBy.DATE -> ""
+        GroupBy.CATEGORY -> tr("Uncategorized")
+        GroupBy.ACCOUNT -> tr("Account")
+        GroupBy.PAYER -> stringResource(R.string.history_unassigned_payer)
+    }
+    val groupNames = when (group) {
+        GroupBy.DATE -> emptyMap()
+        GroupBy.CATEGORY -> names + (GroupBy.TRANSFERS to tr("Transfers"))
+        GroupBy.ACCOUNT -> accounts
+        GroupBy.PAYER -> members
+    }
+    val locale = LedgerFormats.locale
+    val titles = remember(aggregated, group, groupNames, otherLabel, locale) {
+        aggregated.associate { (key) ->
+            key to if (group == GroupBy.DATE) LocalDate.parse(key).shortDate() else groupNames[key] ?: otherLabel
+        }
+    }
+    val grouping = remember(aggregated, group, sort, titles, locale) {
+        sortTransactionGroups(aggregated, group, sort, titles, locale)
+    }
+    val displayedKeys = titles.keys
+    val anyCollapsed = displayedKeys.any { !expansion.isExpanded(it) }
+    val anyExpanded = displayedKeys.any { expansion.isExpanded(it) }
+    fun expandVisible(expand: Boolean) {
+        val knownKeys = state.ledger.entries.asSequence().filter { it.deletedAt == null }.map(group::key).toSet()
+        expansionState.value = expansion.setVisible(displayedKeys, knownKeys, expand)
+    }
     val focus = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
     val list = rememberLazyListState()
@@ -170,11 +192,12 @@ fun HistoryScreen(state: LedgerState, vm: LedgerViewModel, openEntry: (Entry) ->
     var maximumFocused by remember { mutableStateOf(false) }
     var min by rememberSaveable(budget?.id) { mutableStateOf(state.filters.minimum?.storage().orEmpty()) }
     var max by rememberSaveable(budget?.id) { mutableStateOf(state.filters.maximum?.storage().orEmpty()) }
-    val filtered = state.filters != Filters()
+    val filtered = state.filters != Filters() || sort != group.sortOptions.first()
     fun resetOverview() {
         focus.clearFocus()
         keyboard?.hide()
         vm.clearOverviewFilters()
+        sortSelection.value = group.sortOptions.first()
         min = ""
         max = ""
     }
@@ -200,16 +223,25 @@ fun HistoryScreen(state: LedgerState, vm: LedgerViewModel, openEntry: (Entry) ->
             }
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Select("Group by", group, GroupBy.entries, { it.label() }, Modifier.weight(1f)) { group = it }
+                    Select("Group by", group, GroupBy.entries, { it.label() }, Modifier.weight(1f).testTag("history-group-by")) {
+                        sortSelection.value = it.compatibleSort(sort)
+                        groupSelection.value = it
+                    }
                     OutlinedButton({ expandedFilters = !expandedFilters }, Modifier.heightIn(min = 49.dp)) {
                         Icon(Icons.Outlined.Tune, null); Spacer(Modifier.width(6.dp)); Text(tr("Filters"))
                     }
                 }
             }
+            item {
+                val sortLabels = group.sortOptions.associateWith { historySortLabel(it, group) }
+                Select("Sort by", sort, group.sortOptions, sortLabels::getValue, Modifier.fillMaxWidth().testTag("history-sort")) {
+                    sortSelection.value = it
+                }
+            }
             if (displayedKeys.isNotEmpty() || filtered) item("history-group-actions") {
                 FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    if (anyCollapsed) GroupExpansionButton(expand = true) { collapsed = collapsed - displayedKeys }
-                    if (anyExpanded) GroupExpansionButton(expand = false) { collapsed = collapsed + displayedKeys }
+                    if (anyCollapsed) GroupExpansionButton(expand = true) { expandVisible(true) }
+                    if (anyExpanded) GroupExpansionButton(expand = false) { expandVisible(false) }
                     if (filtered) TextButton(::resetOverview, Modifier.testTag("history-clear-filters")) {
                         Icon(Icons.Outlined.FilterAltOff, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(5.dp))
@@ -237,7 +269,6 @@ fun HistoryScreen(state: LedgerState, vm: LedgerViewModel, openEntry: (Entry) ->
                     Field("Minimum in ${budget?.currency.orEmpty()}", min, { min = it }, Modifier.onFocusChanged { minimumFocused = it.hasFocus })
                     Field("Maximum in ${budget?.currency.orEmpty()}", max, { max = it }, Modifier.onFocusChanged { maximumFocused = it.hasFocus })
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        FilterChip(state.filters.byAmount, { vm.filters.value = state.filters.copy(byAmount = !state.filters.byAmount) }, { Text(tr("Sort by amount")) })
                         Spacer(Modifier.weight(1f))
                         TextButton({
                             val lower = parseMoney(min); val upper = parseMoney(max)
@@ -251,16 +282,10 @@ fun HistoryScreen(state: LedgerState, vm: LedgerViewModel, openEntry: (Entry) ->
             if (grouping.isEmpty()) item { Panel { EmptyMessage(tr("No matching transactions"), tr("Change the date range or clear your filters.")) } }
             grouping.forEach { summary ->
                 val key = summary.key
-                val expanded = key !in collapsed
+                val expanded = expansion.isExpanded(key)
                 item("header-$group-$key") {
-                    val title = when (group) {
-                        GroupBy.DATE -> LocalDate.parse(key).shortDate()
-                        GroupBy.CATEGORY -> names[key] ?: tr(if (key == "transfer") "Transfers" else "Uncategorized")
-                        GroupBy.ACCOUNT -> accounts[key] ?: tr("Account")
-                        GroupBy.PAYER -> members[key] ?: stringResource(R.string.history_unassigned_payer)
-                    }
-                    TransactionGroupHeader(title, summary, currency, expanded, Modifier.animateItem()) {
-                        collapsed = if (expanded) collapsed + key else collapsed - key
+                    TransactionGroupHeader(titles.getValue(key), summary, currency, expanded, Modifier.animateItem()) {
+                        expansionState.value = expansion.toggle(key)
                     }
                 }
                 if (expanded) items(summary.entries, key = { it.id }) { entry ->
@@ -272,6 +297,16 @@ fun HistoryScreen(state: LedgerState, vm: LedgerViewModel, openEntry: (Entry) ->
         }
     }
 }
+
+@Composable
+private fun historySortLabel(sort: GroupSort, group: GroupBy): String = stringResource(when (sort) {
+    GroupSort.NEWEST -> R.string.history_sort_newest
+    GroupSort.OLDEST -> R.string.history_sort_oldest
+    GroupSort.NAME_ASC -> R.string.history_sort_name_asc
+    GroupSort.NAME_DESC -> R.string.history_sort_name_desc
+    GroupSort.AMOUNT_HIGH -> if (group == GroupBy.CATEGORY) R.string.history_sort_amount_high else R.string.history_sort_expenses_high
+    GroupSort.AMOUNT_LOW -> if (group == GroupBy.CATEGORY) R.string.history_sort_amount_low else R.string.history_sort_expenses_low
+})
 
 @Composable
 private fun GroupExpansionButton(expand: Boolean, onClick: () -> Unit) {

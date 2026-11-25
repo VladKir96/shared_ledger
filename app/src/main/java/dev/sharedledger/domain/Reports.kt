@@ -84,7 +84,7 @@ fun accountBalance(account: Account, entries: List<Entry>, through: LocalDate? =
 data class Filters(
     val category: String? = null, val account: String? = null, val payer: String? = null,
     val type: EntryType? = null, val currency: String? = null, val minimum: BigDecimal? = null,
-    val maximum: BigDecimal? = null, val query: String = "", val byAmount: Boolean = false
+    val maximum: BigDecimal? = null, val query: String = ""
 )
 
 fun filterEntries(entries: List<Entry>, span: DateSpan, filters: Filters, categories: Map<String, String>, budgetCurrency: String): List<Entry> {
@@ -103,9 +103,7 @@ fun filterEntries(entries: List<Entry>, span: DateSpan, filters: Filters, catego
             (filters.query.isBlank() || entry.note.contains(filters.query, true) ||
                 categories[entry.categoryId]?.contains(filters.query, true) == true)
     }
-    return if (filters.byAmount) matching.sortedWith(compareByDescending<Entry> {
-        it.budgetAmount?.takeIf { _ -> it.budgetCurrency == budgetCurrency }?.decimal()
-    }.thenByDescending { it.date }) else matching.sortedWith(compareByDescending<Entry> { it.date }.thenByDescending { it.createdAt })
+    return matching.sortedWith(compareByDescending<Entry> { it.date }.thenByDescending { it.createdAt })
 }
 
 fun spendingBy(entries: List<Entry>, currency: String, type: EntryType = EntryType.EXPENSE, key: (Entry) -> String?): Map<String?, BigDecimal> {

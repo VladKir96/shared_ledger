@@ -3,7 +3,10 @@ package dev.sharedledger
 import androidx.compose.ui.test.*
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.lifecycle.ViewModelProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import dev.sharedledger.domain.EntryType
+import dev.sharedledger.presentation.LedgerViewModel
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -29,6 +32,14 @@ class LedgerUiTest {
         ui.onNodeWithTag("tab-history").performSemanticsAction(SemanticsActions.OnClick)
         ui.onNodeWithText("Search notes and categories").performTextInput("UI groceries")
         ui.onNodeWithText("Search notes and categories").performImeAction()
+        lateinit var vm: LedgerViewModel
+        ui.activityRule.scenario.onActivity { vm = ViewModelProvider(it)[LedgerViewModel::class.java] }
+        ui.waitUntil(8_000) {
+            val state = vm.state.value
+            state.filters.query == "UI groceries" && state.entries.isNotEmpty() && state.entries.none { it.type == EntryType.INCOME }
+        }
+        ui.onNodeWithTag("history-list").performScrollToNode(hasTestTag("expand-all-groups"))
+        ui.onNodeWithTag("expand-all-groups").performSemanticsAction(SemanticsActions.OnClick)
         ui.onNodeWithTag("history-list").performScrollToNode(hasText("Groceries"))
         ui.onNodeWithText("Groceries", substring = false).assertIsDisplayed()
         ui.onNodeWithText("Salary", substring = false).assertDoesNotExist()

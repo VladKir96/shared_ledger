@@ -98,7 +98,7 @@ private val labels = mapOf(
     "Group by" to R.string.ui_group_by,
     "Payer" to R.string.ui_payer,
     "Filters" to R.string.ui_filters,
-    "Sort by amount" to R.string.ui_sort_by_amount,
+    "Sort by" to R.string.history_sort_by,
     "Reset filters" to R.string.ui_reset_filters,
     "Apply amounts" to R.string.ui_apply_amounts,
     "Archive" to R.string.ui_archive,

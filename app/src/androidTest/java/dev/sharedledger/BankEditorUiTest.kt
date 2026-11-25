@@ -72,6 +72,8 @@ class BankEditorUiTest {
             save("Bank salary", "Save income")
 
             click(ui.onNodeWithTag("tab-history"))
+            ui.onNodeWithTag("history-list").performScrollToNode(hasTestTag("expand-all-groups"))
+            click(ui.onNodeWithTag("expand-all-groups"))
             val expense = "−" + money("2500".toBigDecimal(), "RSD")
             val income = "≈ +" + money("117000".toBigDecimal(), "RSD")
             ui.onNodeWithTag("history-list").performScrollToNode(hasText(expense))

@@ -1,7 +1,15 @@
 package dev.sharedledger.presentation
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -15,6 +23,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -40,11 +49,13 @@ import androidx.compose.ui.window.Dialog
 import dev.sharedledger.R
 import dev.sharedledger.data.Category
 import dev.sharedledger.data.Entry
+import dev.sharedledger.domain.DirectionTotal
 import dev.sharedledger.domain.EntryType
 import dev.sharedledger.domain.LedgerFormats
 import dev.sharedledger.domain.totals
 import java.text.NumberFormat
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.hypot
 
 @Stable
@@ -92,12 +103,12 @@ fun Distribution(
     categories: List<Category>,
     onDrill: (EntryType, String?) -> Unit,
     selection: DonutSelection = rememberDonutSelection(),
-    resetOverview: (() -> Unit)? = null
+    resetOverview: (() -> Unit)? = null,
+    swipeEnabled: Boolean = false
 ) {
     val type = selection.type
     val sectors = remember(entries, currency, categories, type) { donutSectors(slices(entries, currency, type, categories)) }
     val sums = remember(entries, currency) { totals(entries, currency) }
-    val total = if (type == EntryType.EXPENSE) sums.outgoing else sums.incoming
     val selected = sectors.firstOrNull { it.slice.key == selection.category }
     LaunchedEffect(sectors, selection.category) {
         if (selected == null && selection.category != null) selection.select(null)
@@ -105,49 +116,118 @@ fun Distribution(
 
     var showLegend by rememberSaveable { mutableStateOf(false) }
     val categoriesLabel = stringResource(R.string.chart_categories)
-    val centerTitle = selected?.slice?.let { categoryName(it) } ?: tr(if (type == EntryType.EXPENSE) "Total expenses" else "Total income")
-    val centerAmount = if (selected != null) valuationMoney(selected.slice.amount, currency, selected.slice.approximate)
-        else if (total.hasAmount || total.pending == 0) valuationMoney(total.amount, currency, total.approximate)
-        else tr("Rate pending")
-    val centerShare = selected?.let { shareLabel(it.share) }
+    val breakdown: @Composable (EntryType) -> Unit = { shownType ->
+        val active = shownType == type
+        val shownSectors = if (active) sectors else remember(entries, currency, categories, shownType) {
+            donutSectors(slices(entries, currency, shownType, categories))
+        }
+        DistributionContent(shownType, shownSectors, selected.takeIf { active }, currency,
+            if (shownType == EntryType.EXPENSE) sums.outgoing else sums.incoming, categoriesLabel,
+            selection.canReset && active, resetOverview ?: selection::reset,
+            onDrill = { id -> if (active) onDrill(shownType, id) },
+            onLegend = { if (active) showLegend = true },
+            onSelect = { if (active) selection.select(it) },
+            onSwipe = if (swipeEnabled && active) selection::changeType else null)
+    }
 
     Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surface) {
         Column(Modifier.padding(vertical = 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(tr("Breakdown"), style = MaterialTheme.typography.titleLarge)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(type == EntryType.EXPENSE, { selection.changeType(EntryType.EXPENSE) }, { Text(tr("Expenses")) })
-                    FilterChip(type == EntryType.INCOME, { selection.changeType(EntryType.INCOME) }, { Text(tr("Income")) })
+                    FilterChip(type == EntryType.EXPENSE, { selection.changeType(EntryType.EXPENSE) }, { Text(tr("Expenses")) },
+                        Modifier.testTag("donut-expenses"))
+                    FilterChip(type == EntryType.INCOME, { selection.changeType(EntryType.INCOME) }, { Text(tr("Income")) },
+                        Modifier.testTag("donut-income"))
                 }
             }
-            DonutPlot(sectors, selected, currency, centerTitle, centerAmount, centerShare, categoriesLabel,
-                onLegend = { showLegend = true }, onSelect = selection::select)
-            if (total.pending > 0) {
-                Text(pluralStringResource(R.plurals.history_group_partial, total.pending, total.pending),
-                    modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center)
-            } else if (sectors.isEmpty()) {
-                Text(tr("Your recorded transactions will appear here."), modifier = Modifier.padding(horizontal = 16.dp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall,
-                    textAlign = TextAlign.Center)
-            }
-            if (sectors.isNotEmpty() || selection.canReset) FlowRow(
-                Modifier.fillMaxWidth().padding(horizontal = 10.dp),
-                horizontalArrangement = Arrangement.Center
-            ) {
-                if (sectors.isNotEmpty()) TextButton({ showLegend = true }, Modifier.testTag("donut-open-legend")) { Text(categoriesLabel) }
-                selected?.slice?.id?.let { id ->
-                    TextButton({ onDrill(type, id) }) { Text(tr("View transactions")) }
+            if (swipeEnabled) {
+                AnimatedContent(type, Modifier.fillMaxWidth().clipToBounds(), label = "Breakdown type",
+                    transitionSpec = {
+                        val direction = if (targetState == EntryType.INCOME) 1 else -1
+                        (slideInHorizontally { direction * it / 4 } + fadeIn()) togetherWith
+                            (slideOutHorizontally { -direction * it / 4 } + fadeOut())
+                    }) {
+                    breakdown(it)
                 }
-                if (selection.canReset) TextButton(resetOverview ?: selection::reset, Modifier.testTag("donut-show-all")) {
-                    Text(stringResource(R.string.overview_show_all))
-                }
-            }
+            } else breakdown(type)
         }
     }
     if (showLegend && sectors.isNotEmpty()) DonutLegend(sectors, selected, currency, close = { showLegend = false }) { key ->
         selection.select(key)
         showLegend = false
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun DistributionContent(
+    type: EntryType,
+    sectors: List<DonutSector>,
+    selected: DonutSector?,
+    currency: String,
+    total: DirectionTotal,
+    categoriesLabel: String,
+    canReset: Boolean,
+    reset: () -> Unit,
+    onDrill: (String) -> Unit,
+    onLegend: () -> Unit,
+    onSelect: (String?) -> Unit,
+    onSwipe: ((EntryType) -> Unit)?
+) {
+    val centerTitle = selected?.slice?.let { categoryName(it) } ?: tr(if (type == EntryType.EXPENSE) "Total expenses" else "Total income")
+    val centerAmount = if (selected != null) valuationMoney(selected.slice.amount, currency, selected.slice.approximate)
+        else if (total.hasAmount || total.pending == 0) valuationMoney(total.amount, currency, total.approximate)
+        else tr("Rate pending")
+    val centerShare = selected?.let { shareLabel(it.share) }
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        val plotModifier = if (onSwipe != null) Modifier.chartSwipe(onSwipe) else Modifier
+        DonutPlot(sectors, selected, currency, centerTitle, centerAmount, centerShare, categoriesLabel, onLegend, onSelect,
+            plotModifier)
+        if (total.pending > 0) {
+            Text(pluralStringResource(R.plurals.history_group_partial, total.pending, total.pending),
+                modifier = Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center)
+        } else if (sectors.isEmpty()) {
+            Text(tr("Your recorded transactions will appear here."), modifier = Modifier.padding(horizontal = 16.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall,
+                textAlign = TextAlign.Center)
+        }
+        if (sectors.isNotEmpty() || canReset) FlowRow(
+            Modifier.fillMaxWidth().padding(horizontal = 10.dp),
+            horizontalArrangement = Arrangement.Center
+        ) {
+            if (sectors.isNotEmpty()) TextButton(onLegend, Modifier.testTag("donut-open-legend")) { Text(categoriesLabel) }
+            selected?.slice?.id?.let { id ->
+                TextButton({ onDrill(id) }) { Text(tr("View transactions")) }
+            }
+            if (canReset) TextButton(reset, Modifier.testTag("donut-show-all")) { Text(stringResource(R.string.overview_show_all)) }
+        }
+    }
+}
+
+private fun Modifier.chartSwipe(onSwipe: (EntryType) -> Unit): Modifier = pointerInput(onSwipe) {
+    val threshold = 48.dp.toPx()
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        var horizontal = false
+        while (true) {
+            val change = awaitPointerEvent().changes.singleOrNull() ?: break
+            if (change.id != down.id) break
+            val distance = change.position - down.position
+            if (!change.pressed) {
+                if (horizontal && !change.isConsumed && abs(distance.x) >= threshold) {
+                    onSwipe(if (distance.x < 0) EntryType.INCOME else EntryType.EXPENSE)
+                }
+                break
+            }
+            if (change.isConsumed) break
+            if (!horizontal && maxOf(abs(distance.x), abs(distance.y)) > viewConfiguration.touchSlop) {
+                if (abs(distance.x) <= abs(distance.y)) break
+                horizontal = true
+            }
+            if (horizontal) change.consume()
+        }
     }
 }
 
@@ -161,7 +241,8 @@ private fun DonutPlot(
     centerShare: String?,
     categoriesLabel: String,
     onLegend: () -> Unit,
-    onSelect: (String?) -> Unit
+    onSelect: (String?) -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val onSelectLatest by rememberUpdatedState(onSelect)
     val density = LocalDensity.current
@@ -184,7 +265,7 @@ private fun DonutPlot(
             animateFloatAsState(if (selected == sector) 1f else 0f, label = "Sector emphasis")
         }
     }
-    BoxWithConstraints(Modifier.widthIn(max = 540.dp).fillMaxWidth()) {
+    BoxWithConstraints(modifier.widthIn(max = 540.dp).fillMaxWidth()) {
         val (labelWidth, labelHeight) = labelDimensions
         val labeledDiameter = minOf(maxWidth * .77f, maxWidth - labelWidth * 2 - 8.dp, 380.dp)
         val hasLabelSpace = sectors.isNotEmpty() && labeledDiameter >= 112.dp

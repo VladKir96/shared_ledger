@@ -84,7 +84,15 @@
     <string name="ui_group_by">Группировать по</string>
     <string name="ui_payer">Плательщик</string>
     <string name="ui_filters">Фильтры</string>
-    <string name="ui_sort_by_amount">По сумме</string>
+    <string name="history_sort_by">Сортировка</string>
+    <string name="history_sort_newest">Дата: сначала новые</string>
+    <string name="history_sort_oldest">Дата: сначала старые</string>
+    <string name="history_sort_expenses_high">Расходы: по убыванию</string>
+    <string name="history_sort_expenses_low">Расходы: по возрастанию</string>
+    <string name="history_sort_amount_high">Сумма: по убыванию</string>
+    <string name="history_sort_amount_low">Сумма: по возрастанию</string>
+    <string name="history_sort_name_asc">Название: от А до Я</string>
+    <string name="history_sort_name_desc">Название: от Я до А</string>
     <string name="ui_reset_filters">Сбросить фильтры</string>
     <string name="ui_apply_amounts">Применить суммы</string>
     <string name="ui_archive">Архивировать</string>

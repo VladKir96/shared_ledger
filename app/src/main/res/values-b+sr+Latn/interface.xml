@@ -84,7 +84,15 @@
     <string name="ui_group_by">Grupiši po</string>
     <string name="ui_payer">Platilac</string>
     <string name="ui_filters">Filteri</string>
-    <string name="ui_sort_by_amount">Sortiraj po iznosu</string>
+    <string name="history_sort_by">Sortiraj po</string>
+    <string name="history_sort_newest">Datum: noviji prvo</string>
+    <string name="history_sort_oldest">Datum: stariji prvo</string>
+    <string name="history_sort_expenses_high">Rashodi: od većih ka manjim</string>
+    <string name="history_sort_expenses_low">Rashodi: od manjih ka većim</string>
+    <string name="history_sort_amount_high">Iznos: od većeg ka manjem</string>
+    <string name="history_sort_amount_low">Iznos: od manjeg ka većem</string>
+    <string name="history_sort_name_asc">Naziv: A–Ž</string>
+    <string name="history_sort_name_desc">Naziv: Ž–A</string>
     <string name="ui_reset_filters">Poništi filtere</string>
     <string name="ui_apply_amounts">Primeni iznose</string>
     <string name="ui_archive">Arhiviraj</string>
