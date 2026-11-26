@@ -43,26 +43,38 @@ class BudgetValuationUiTest {
             await(hasText(budget.name))
             click(ui.onNodeWithTag("add-income"))
             replace("transaction-amount", "100")
+            ui.onNodeWithTag("budget-rate").assertDoesNotExist()
+            openRate()
             assertValue("budget-rate", "117")
             assertValue("budget-amount", "11700")
             replace("budget-rate", "114,50")
             assertValue("budget-amount", "11450")
             replace("budget-amount", "11400")
             assertValue("budget-rate", "114")
+            closeRate()
             replace("transaction-amount", "200")
+            openRate()
             assertValue("budget-amount", "22800")
             click(ui.onNodeWithText("Use reference rate").performScrollTo())
             assertValue("budget-amount", "23400")
+            closeRate()
             replace("transaction-amount", "100")
+            openRate()
             replace("budget-rate", "114")
+            closeRate()
             click(ui.onNode(hasText("Choose category") and hasClickAction()).performScrollTo())
             val salary = hasText("Valuation salary") and hasClickAction()
             await(salary)
             click(ui.onNode(salary))
             click(ui.onNodeWithText("Save income").assertIsEnabled())
             await(hasTestTag("add-income"))
+            val recorded = runBlocking { repo.dao.entries(budget.id).single() }
+            org.junit.Assert.assertEquals("100", recorded.accountAmount)
+            org.junit.Assert.assertEquals("11400", recorded.budgetAmount)
             click(ui.onNodeWithTag("add-income"))
             replace("transaction-amount", "200")
+            ui.onNodeWithTag("budget-rate").assertDoesNotExist()
+            openRate()
             assertValue("budget-rate", "114")
             assertValue("budget-amount", "22800")
             ui.onNodeWithText("Last manually confirmed rate", substring = true).assertExists()
@@ -72,6 +84,9 @@ class BudgetValuationUiTest {
             }
         }
     }
+
+    private fun openRate() = click(ui.onNodeWithTag("edit-budget-rate").performScrollTo())
+    private fun closeRate() = click(ui.onNodeWithTag("apply-budget-rate").assertIsEnabled())
 
     private fun replace(tag: String, value: String) =
         ui.onNodeWithTag(tag).performScrollTo().performTextReplacement(value)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Configure signing or prepare a local SharedLedger release."""
+"""Configure signing or build, verify and publish a SharedLedger release."""
 import argparse
 import base64
 from contextlib import contextmanager
@@ -16,6 +16,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -24,6 +25,7 @@ from zipfile import ZipFile
 from generate_update_manifest import (Apk, MAX_APK, MAX_CODE, PACKAGE, REPO, SHA256, VERSION,
                                       ReleaseError, apk_metadata, asset_url, manifest_url, release_notes,
                                       run, sha256, signature, write_assets)
+from github_release import COMMIT, GitHubPublication, source_snapshot
 
 ROOT = Path(__file__).resolve().parent.parent
 SUPPORT = Path.home() / "Library/Application Support/SharedLedger"
@@ -67,7 +69,7 @@ def secure_url(url, hosts):
 
 class GitHubRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if not secure_url(newurl, ASSET_HOSTS):
+        if not secure_url(newurl, ASSET_HOSTS | {"github.com"}):
             raise ReleaseError("GitHub redirected to an unexpected asset host.")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
@@ -292,15 +294,16 @@ def public_file(url, output):
             destination.write(block)
 
 
-def published_versions(repo, tag, tools, staging, signer):
+def published_versions(repo, tag, tools, staging, signer, *, resume=False):
     prefix = f"{GITHUB_API}/repos/{repo}"
-    try:
-        public_json(f"{prefix}/git/ref/tags/{tag}")
-    except HTTPError as error:
-        if error.code != 404:
-            raise
-    else:
-        raise ReleaseError(f"GitHub already has tag {tag}. Use a new version.")
+    if not resume:
+        try:
+            public_json(f"{prefix}/git/ref/tags/{tag}")
+        except HTTPError as error:
+            if error.code != 404:
+                raise
+        else:
+            raise ReleaseError(f"GitHub already has tag {tag}. Use a new version.")
     candidates = []
     for page in range(1, 101):
         releases = public_json(f"{prefix}/releases?per_page=100&page={page}")
@@ -309,6 +312,8 @@ def published_versions(repo, tag, tools, staging, signer):
                 continue
             previous = release["tag_name"]
             if previous == tag:
+                if resume:
+                    continue
                 raise ReleaseError(f"GitHub already has a release for {tag}.")
             names = {asset["name"] for asset in release["assets"]}
             apks = {name for name in names if name.lower().endswith(".apk")}
@@ -413,7 +418,10 @@ def release(args):
         raise ReleaseError("Use a stable version in X.Y.Z format, for example 0.3.0.")
     if args.version_code is not None and not 1 <= args.version_code <= MAX_CODE:
         raise ReleaseError("The requested versionCode is outside Android's supported range.")
-    notes = release_notes(args.notes)
+    resume = getattr(args, "resume", False)
+    local_only = getattr(args, "no_publish", False)
+    if resume and (local_only or args.notes is not None or args.version_code is not None):
+        raise ReleaseError("--resume uses the prepared APK, versionCode and notes. Omit other release flags.")
     repo = update_repository()
     manifest = manifest_url(repo)
     tools = AndroidTools.detect()
@@ -425,37 +433,135 @@ def release(args):
     with release_lock() as directory, tempfile.TemporaryDirectory(prefix=".staging-", dir=directory) as temp:
         stage = Path(temp)
         target = directory / tag
-        if target.exists():
-            raise ReleaseError(f"Artifacts for {tag} already exist at {target}. Use the existing files or choose a new version.")
-        previous = published_versions(repo, tag, tools, stage, signer)
-        baseline = int(properties(ROOT / "gradle.properties")[CODE_PROPERTY])
-        staged = [json.loads(path.read_text(encoding="utf-8"))["versionCode"] for path in directory.glob("v*/latest.json")]
-        debug = ROOT / "app/build/outputs/apk/debug/app-debug.apk"
-        if debug.is_file():
-            baseline = max(baseline, apk_metadata(debug, tools.build, env).code)
-        connected = installed_versions(tools, stage, signer)
-        code = version_code(baseline, previous, staged, max(connected, default=0), args.version_code)
-        print(f"Preparing SharedLedger {args.version} (versionCode {code}) for {repo}.", flush=True)
-        if subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "scripts/tests"], cwd=ROOT).returncode != 0:
-            raise ReleaseError("Release workflow tests failed.")
-        command = [ROOT / "gradlew", "--no-daemon", "--max-workers=2", "testDebugUnitTest", "lintDebug", "assembleRelease",
-                   f"-PsharedLedgerReleaseVersionName={args.version}", f"-PsharedLedgerReleaseVersionCode={code}",
-                   "-PsharedLedgerDistribution=true"]
-        if subprocess.run([str(part) for part in command], cwd=ROOT, env=env).returncode != 0:
-            raise ReleaseError("Gradle tests or the signed release build failed.")
-        apk = ROOT / "app/build/outputs/apk/release/app-release.apk"
-        if not apk.is_file():
-            raise ReleaseError("The signed app-release.apk was not generated.")
-        verify_embedded(apk, tools, env, cloud, manifest, signer)
-        artifacts = stage / "artifacts"
-        artifacts.mkdir()
-        meta = write_assets(apk, artifacts, repo, signer, tools.build, notes, env, expected=Apk(PACKAGE, code, args.version, 26))
-        artifacts.rename(target)
-    print(f"APK SHA-256 {meta['sha256']}\nSigning certificate SHA-256 {signer}")
-    print(f"APK {target / ('sharedledger-' + args.version + '.apk')}\nMetadata {target / 'latest.json'}")
-    print(f"In https://github.com/{repo}/releases/new create tag {tag} and use title SharedLedger {args.version}.")
-    print("Attach both files, verify the tag and assets, and publish as the latest stable release.")
-    print(f"Update manifest {manifest}")
+        if target.exists() and not resume:
+            raise ReleaseError(f"Artifacts for {tag} already exist at {target}. Use --resume for a matching prepared release.")
+        if resume and not (target / "release-info.json").is_file():
+            raise ReleaseError(f"No artifacts with source provenance are staged for {tag}. Prepare a release with this workflow first.")
+
+        source = source_snapshot(ROOT)
+        publication = None if local_only else GitHubPublication(ROOT, repo, SUPPORT.parent / "Pocket FX/tools/gh")
+        target_commit = None
+        if publication and not resume:
+            publication.source_ready(source)
+            target_commit = publication.target_commit(source)
+            if publication.find_release(tag):
+                raise ReleaseError(f"GitHub already has a draft or published release for {tag}.")
+            publication.check_tags(source, tag, target_commit, resume=False)
+        apk = target / f"sharedledger-{args.version}.apk"
+        index = target / "latest.json"
+        provenance = target / "release-info.json"
+        if resume:
+            info = json.loads(provenance.read_text(encoding="utf-8"))
+            if not source["sourceCommit"] or any(info.get(k) != v for k, v in source.items()) or info.get("releaseRepository") != repo:
+                raise ReleaseError("Resume from the exact clean source and repositories recorded when the release was staged.")
+            meta = verify_staged(apk, index, info, args.version, repo, tools, env, signer, cloud)
+            target_commit = info.get("releaseCommit") or publication.target_commit(source)
+            if not COMMIT.fullmatch(target_commit):
+                raise ReleaseError("The recorded release commit is invalid.")
+            if not info.get("releaseCommit"):
+                info["releaseCommit"] = target_commit
+                record_release(provenance, info)
+        else:
+            previous = published_versions(repo, tag, tools, stage, signer)
+            meta = prepare_release(args, repo, manifest, source, target_commit, directory, target, stage,
+                                   previous, tools, env, signer, cloud)
+
+        release_url = None
+        if publication:
+            def check_version():
+                previous = published_versions(repo, tag, tools, stage, signer, resume=True)
+                if meta["versionCode"] <= max(previous, default=0):
+                    raise ReleaseError("Another release has a newer or equal versionCode. Prepare a new version.")
+
+            try:
+                if resume:
+                    publication.check_tags(source, tag, target_commit, resume=True)
+                if not (existing := publication.find_release(tag)) or existing["draft"]:
+                    check_version()
+                release_url = publication.publish(source, target_commit, tag, apk, index, meta, stage, check_version,
+                    lambda: verify_published(repo, tag, apk, meta, stage))
+            except (ReleaseError, OSError, URLError, ValueError, KeyError) as error:
+                raise ReleaseError(f"{error}\nArtifacts retained at {target}. Retry with ./scripts/release.sh {args.version} --resume.") from None
+
+    print(f"Version {args.version} (versionCode {meta['versionCode']})\nGit tag {tag}")
+    print(f"APK {apk}\nAPK SHA-256 {meta['sha256']}")
+    print(f"Signing verified with SHA-256 certificate {signer}\nMetadata {index}\nUpdate manifest {manifest}")
+    print("Tests passed: release workflow unit tests, Android unit tests and lint" + (" (from the staged build)." if resume else "."))
+    if release_url:
+        print(f"Publication verified as latest stable.\nGitHub Release {release_url}")
+    else:
+        print("Publication status: local build only.")
+
+
+def prepare_release(args, repo, manifest, source, target_commit, directory, target, stage, previous, tools, env, signer, cloud):
+    baseline = int(properties(ROOT / "gradle.properties")[CODE_PROPERTY])
+    staged = [json.loads(path.read_text(encoding="utf-8"))["versionCode"] for path in directory.glob("v*/latest.json")]
+    debug = ROOT / "app/build/outputs/apk/debug/app-debug.apk"
+    if debug.is_file():
+        baseline = max(baseline, apk_metadata(debug, tools.build, env).code)
+    connected = installed_versions(tools, stage, signer)
+    code = version_code(baseline, previous, staged, max(connected, default=0), args.version_code)
+    notes = release_notes(args.notes)
+    print(f"Preparing SharedLedger {args.version} (versionCode {code}) for {repo}.", flush=True)
+    if subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "scripts/tests"], cwd=ROOT).returncode != 0:
+        raise ReleaseError("Release workflow tests failed.")
+    command = [ROOT / "gradlew", "--no-daemon", "--max-workers=2", "testDebugUnitTest", "lintDebug", "assembleRelease",
+               f"-PsharedLedgerReleaseVersionName={args.version}", f"-PsharedLedgerReleaseVersionCode={code}",
+               "-PsharedLedgerDistribution=true"]
+    if subprocess.run([str(part) for part in command], cwd=ROOT, env=env).returncode != 0:
+        raise ReleaseError("Gradle tests or the signed release build failed.")
+    apk = ROOT / "app/build/outputs/apk/release/app-release.apk"
+    if not apk.is_file():
+        raise ReleaseError("The signed app-release.apk was not generated.")
+    if source_snapshot(ROOT) != source:
+        raise ReleaseError("The source revision or working tree status changed during the build.")
+    verify_embedded(apk, tools, env, cloud, manifest, signer)
+    artifacts = stage / "artifacts"
+    artifacts.mkdir()
+    meta = write_assets(apk, artifacts, repo, signer, tools.build, notes, env, expected=Apk(PACKAGE, code, args.version, 26))
+    record_release(artifacts / "release-info.json", dict(source, releaseRepository=repo, releaseCommit=target_commit,
+        manifestSha256=sha256(artifacts / "latest.json"), apkSha256=meta["sha256"], versionCode=code))
+    artifacts.rename(target)
+    return meta
+
+
+def record_release(path, info):
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, encoding="utf-8", delete=False) as output:
+        json.dump(info, output, indent=2)
+        output.write("\n")
+    Path(output.name).replace(path)
+
+
+def verify_staged(apk, index, info, version, repo, tools, env, signer, cloud):
+    meta = json.loads(index.read_text(encoding="utf-8"))
+    code = meta["versionCode"]
+    if (type(code) is not int or code != info["versionCode"] or sha256(index) != info["manifestSha256"]
+            or not apk.is_file() or apk.stat().st_size != meta["apkSize"] or sha256(apk) != info["apkSha256"]
+            or info["apkSha256"] != meta["sha256"] or meta["versionName"] != version
+            or meta["apkUrl"] != asset_url(repo, f"v{version}", apk.name) or meta["packageName"] != PACKAGE
+            or apk_metadata(apk, tools.build, env) != Apk(PACKAGE, code, version, meta["minSdk"])
+            or signature(apk, tools.build, env) != signer):
+        raise ReleaseError("The staged APK or manifest no longer matches the verified release.")
+    verify_embedded(apk, tools, env, cloud, manifest_url(repo), signer)
+    return meta
+
+
+def verify_published(repo, tag, apk, meta, stage):
+    stable = manifest_url(repo)
+    versioned = asset_url(repo, tag, "latest.json")
+    for attempt in range(4):
+        try:
+            if public_json(stable, 65536) != meta or public_json(versioned, 65536) != meta:
+                raise ReleaseError("The public latest or versioned update manifest does not match the verified release.")
+            downloaded = stage / "published.apk"
+            public_file(meta["apkUrl"], downloaded)
+            if downloaded.stat().st_size != apk.stat().st_size or sha256(downloaded) != meta["sha256"]:
+                raise ReleaseError("The public APK does not match the verified release.")
+            return
+        except (ReleaseError, URLError, ValueError):
+            if attempt == 3:
+                raise
+            time.sleep(2 ** attempt)
 
 
 def main():
@@ -468,6 +574,9 @@ def main():
     build.add_argument("version")
     build.add_argument("--version-code", type=int)
     build.add_argument("--notes", type=Path)
+    mode = build.add_mutually_exclusive_group()
+    mode.add_argument("--no-publish", action="store_true", help="Build a signed release locally without GitHub publication")
+    mode.add_argument("--resume", action="store_true", help="Retry publication of this version's verified artifacts")
     args = parser.parse_args()
     os.umask(0o077)
     try:

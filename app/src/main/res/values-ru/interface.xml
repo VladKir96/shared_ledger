@@ -287,4 +287,17 @@
     <string name="overview_clear_filters">Сбросить фильтры</string>
     <string name="overview_pull">Потяните, чтобы показать всё</string>
     <string name="overview_release">Отпустите, чтобы показать всё</string>
+    <string name="editor_calculator">Калькулятор</string>
+    <string name="editor_copy_amount">Копировать сумму</string>
+    <string name="editor_paste_amount">Вставить сумму</string>
+    <string name="editor_calculator_invalid">Введите допустимую сумму в это поле.</string>
+    <string name="editor_backspace">Удалить последнюю цифру</string>
+    <string name="editor_apply_amount">Применить сумму</string>
+    <string name="editor_transaction_amount">Сумма операции в %1$s</string>
+    <string name="editor_received_amount">Полученная сумма в %1$s</string>
+    <string name="editor_edit_exchange_rate">Изменить обменный курс</string>
+    <string name="editor_budget_exchange_rate">Курс для бюджета</string>
+    <string name="editor_budget_rate">Курс в %1$s за 1 %2$s</string>
+    <string name="editor_budget_amount">Сумма для бюджета в %1$s</string>
+    <string name="editor_rate_done">Готово</string>
 </resources>

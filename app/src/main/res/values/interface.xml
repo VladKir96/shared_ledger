@@ -283,4 +283,17 @@
     <string name="overview_clear_filters">Clear filters</string>
     <string name="overview_pull">Pull to show all</string>
     <string name="overview_release">Release to show all</string>
+    <string name="editor_calculator">Calculator</string>
+    <string name="editor_copy_amount">Copy amount</string>
+    <string name="editor_paste_amount">Paste amount</string>
+    <string name="editor_calculator_invalid">Enter a valid amount for this field.</string>
+    <string name="editor_backspace">Delete last digit</string>
+    <string name="editor_apply_amount">Use amount</string>
+    <string name="editor_transaction_amount">Transaction amount in %1$s</string>
+    <string name="editor_received_amount">Amount received in %1$s</string>
+    <string name="editor_edit_exchange_rate">Edit exchange rate</string>
+    <string name="editor_budget_exchange_rate">Budget exchange rate</string>
+    <string name="editor_budget_rate">Rate in %1$s per %2$s</string>
+    <string name="editor_budget_amount">Budget amount in %1$s</string>
+    <string name="editor_rate_done">Done</string>
 </resources>

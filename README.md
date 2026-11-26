@@ -48,13 +48,13 @@ Configure the public release repository and your dedicated signing key once.
 ./scripts/setup-updates.sh
 ```
 
-Build, test, sign, and stage the APK and its update manifest with one command.
+Install GitHub CLI with `brew install gh` on macOS and sign in with `gh auth login --hostname github.com`. Use an account with write access to the source and release repositories. Commit and push the intended source, then run this command from a clean checkout using the next version.
 
 ```sh
-./scripts/release.sh 0.3.0
+./scripts/release.sh VERSION
 ```
 
-Upload the two files from `build/sharedledger-releases/v0.3.0/` to GitHub Releases. [Signing, publishing, and update instructions](docs/setup-guide.md#building-and-publishing-sharedledger-releases)
+The script tests and signs the APK, tags the source commit, verifies the draft assets, and publishes the latest stable GitHub Release. Use `--no-publish` to build locally or `--resume` to retry publication with the original files in `build/sharedledger-releases/vVERSION/`. [Signing, publishing, and recovery instructions](docs/setup-guide.md#building-and-publishing-sharedledger-releases)
 
 ## Set up shared budgets
 
@@ -103,6 +103,10 @@ Look for version `202611210001`. Existing unexpired, unused invitation codes sti
 
 Use **Settings → Import and export** to merge JSON or CSV into a writable budget. The preview shows reused and new accounts and categories, and keeps the destination's existing history. Shared owners and editors can merge; viewers stay read-only. Deploy Supabase migration `202611210002` before syncing cloud imports. Use **Restore backup as local budgets** to recover the original archive structure. [Import and restore guide](docs/files.md)
 
+## Enter a transaction
+
+Tap an amount field to use the Android numeric keyboard. Enter a decimal with a period or comma, or paste a number. Tap the calculator icon next to the field for arithmetic, then select **Use amount** to apply the result to that field.
+
 ## Record an actual bank conversion
 
 When the transaction currency differs from the account currency, enter the original amount and edit the suggested debit or credit to match your bank statement. Select **Confirm actual bank amount** before saving. SharedLedger uses the latest confirmed rate for that account, currency pair, and direction on subsequent transactions. A backdated entry can use only rates from transactions on or before its date. The first conversion uses the applicable reference quote when available.
@@ -111,7 +115,7 @@ History shows the budget amount first, followed by distinct account and original
 
 ## Set a budget valuation
 
-When the transaction currency differs from the budget currency, edit either the rate or the budget amount directly in **Budget valuation**. For example, a 100 USD income at 114 RSD per USD adds 100 USD to the account and 11,400 RSD to the budget. Saving an edited valuation remembers its rate for that budget, account, currency pair, and income or expense direction. **Use reference rate** restores the applicable provider quote for the transaction. [Budget valuation guide](docs/setup-guide.md#setting-a-budget-valuation)
+When the transaction currency differs from the budget currency, SharedLedger calculates the budget amount automatically. Tap **Edit exchange rate** to change the rate or budget amount. For example, a 100 USD income at 114 RSD per USD adds 100 USD to the account and 11,400 RSD to the budget. Saving the transaction remembers the edited rate for that budget, account, currency pair, and income or expense direction. **Use reference rate** restores the applicable provider quote. [Budget valuation guide](docs/setup-guide.md#setting-a-budget-valuation)
 
 ## Sync transaction deletions
 

@@ -285,4 +285,17 @@
     <string name="overview_clear_filters">Obriši filtere</string>
     <string name="overview_pull">Povuci za prikaz svega</string>
     <string name="overview_release">Pusti za prikaz svega</string>
+    <string name="editor_calculator">Kalkulator</string>
+    <string name="editor_copy_amount">Kopiraj iznos</string>
+    <string name="editor_paste_amount">Nalepi iznos</string>
+    <string name="editor_calculator_invalid">Unesite ispravan iznos za ovo polje.</string>
+    <string name="editor_backspace">Obriši poslednju cifru</string>
+    <string name="editor_apply_amount">Primeni iznos</string>
+    <string name="editor_transaction_amount">Iznos transakcije u %1$s</string>
+    <string name="editor_received_amount">Primljeni iznos u %1$s</string>
+    <string name="editor_edit_exchange_rate">Izmeni kurs</string>
+    <string name="editor_budget_exchange_rate">Kurs za budžet</string>
+    <string name="editor_budget_rate">Kurs u %1$s za 1 %2$s</string>
+    <string name="editor_budget_amount">Iznos za budžet u %1$s</string>
+    <string name="editor_rate_done">Gotovo</string>
 </resources>

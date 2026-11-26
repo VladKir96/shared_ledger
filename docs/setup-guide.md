@@ -486,6 +486,12 @@ Mixed groups show income and expenses separately in the selected budget currency
 
 Transfers count as transactions and are excluded from income and expenses. A transfer-only group shows the amount sent in each source currency. Account groups show filtered activity for the source account. For account balances, use **Settings → Accounts**.
 
+### Entering amounts
+
+Tap any transaction, debit, credit, or transfer amount to open the Android numeric keyboard. Use a period or comma for the decimal separator. Android’s text selection menu supports copying, pasting, and replacing an amount.
+
+Tap the calculator beside an amount field to open it with that field’s value. Use the arithmetic keys or paste a number into the calculator. **000** appends three zeros to the number you are entering. Select **Use amount** to return the result to that field. **Cancel** keeps the original value.
+
 ### Recording bank conversions
 
 1. Add an expense or income. Select the account and then the original transaction currency. A USD account and an RSD purchase open the two-amount editor.
@@ -503,7 +509,7 @@ In **Settings → Exchange rates**, select an account, pair, and direction to se
 ### Setting a budget valuation
 
 1. Add or edit an income or expense. For a 100 USD income to a USD account in an RSD budget, enter **100 USD**.
-2. In **Budget valuation**, enter **114** in the RSD-per-USD rate field or **11,400 RSD** in the amount field using `11400`. Editing either field recalculates the other. Changing the original amount uses the selected rate to recalculate the budget amount.
+2. Tap **Edit exchange rate** and enter **114** in the RSD-per-USD rate field or **11,400 RSD** in the amount field using `11400`. Editing either field recalculates the other. Tap **Done** to keep the edit. Changing the original amount uses the selected rate to recalculate the budget amount.
 3. Save to confirm the edited valuation. A later 200 USD income on the same account can reuse 114 and show **22,800 RSD**, including offline. Expenses have their own rate history. Use **Use reference rate** to replace a valuation with the applicable provider quote.
 
 If the original amount is already in the budget currency, the budget uses that amount directly. When the account has a third currency, the bank debit or credit and the budget valuation can be edited independently. Transaction details show the original amount, account amount, budget rate, rate date, and source. Deploy `202611220002` to share the new confirmations across devices. [Storage and sync policy](schema.md#budget-valuation)
@@ -668,7 +674,7 @@ order by e.kind, d.state;
 
 ## Building and Publishing SharedLedger Releases
 
-SharedLedger uses the package name `dev.sharedledger` and distributes signed APKs. Run these commands from the checkout. The release workflow reads from GitHub and stages assets locally. You publish them from the GitHub release page.
+SharedLedger distributes signed APKs for `dev.sharedledger`. Run these commands from the checkout to build and publish a release with the key used for previous versions.
 
 ### One-time setup
 
@@ -684,31 +690,52 @@ To restore an existing SharedLedger signing identity, set `RELEASE_SIGNING_FILE`
 
 The scripts look for JDK 17 and Android SDK Platform 35 with Build Tools 35.0.0. They check standard Android Studio and SDK locations, `JAVA_HOME`, `ANDROID_HOME`, `sdk.dir` in `local.properties`, and the private SharedLedger and Pocket FX tool directories. The fallback to Pocket FX reuses installed tools.
 
-### Build a signed release
+Install Git and GitHub CLI. On macOS, install the CLI and sign in using these commands.
+
+```sh
+brew install gh
+gh auth login --hostname github.com
+gh auth status --hostname github.com
+```
+
+Use an account with write access to the GitHub source and release repositories and permission to create release tags. If you use a restricted GitHub token, grant repository **Contents** read and write access on both targets. The CLI uses its existing authentication. Keep GitHub tokens out of the checkout, release notes, and APK.
+
+### Build and publish a signed release
 
 Production builds require `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` from [cloud.properties](../cloud.properties.example) or the corresponding environment variables. They also require `app/google-services.json` for `dev.sharedledger`. Keep Firebase service account JSON and Supabase server secrets outside the APK. [Firebase setup](#firebase-push-notification-setup)
 
 ```sh
-./scripts/release.sh 0.3.0
+./scripts/release.sh VERSION
 ```
 
-Supply the new version as `X.Y.Z`. The script chooses an Android version code above the checked-in baseline, staged releases, published versions, and the versions it finds on connected Android devices. If you distributed an APK elsewhere, use `--version-code NUMBER` to reserve a code higher than that APK's code. To include release notes, add `--notes /path/to/release-notes.txt` with one line per change.
+Replace `VERSION` with the next stable version in `X.Y.Z` format. First commit the changes you intend to release and push the current branch to `origin`. Start the release from that clean checkout. The script checks GitHub access, the repository, existing tags, and draft and published releases. It chooses an Android version code above the checked-in baseline, staged releases, published versions, and the versions on connected Android devices. If an APK was distributed elsewhere, use `--version-code NUMBER` with a higher code. Add `--notes /path/to/release-notes.txt` for one release-note item per line.
 
-The script runs the Python workflow tests, debug JVM tests, and lint, then builds the signed release with the Gradle wrapper, and verifies the packaged client configuration and certificate. For the first release the output is:
+The script runs the Python workflow tests, Android unit tests, and lint. It builds the signed APK and verifies the signing certificate, package, version, and embedded client configuration. It stages the files under `build/sharedledger-releases/`.
 
 ```text
-build/sharedledger-releases/v0.3.0/sharedledger-0.3.0.apk
-build/sharedledger-releases/v0.3.0/latest.json
+build/sharedledger-releases/vVERSION/sharedledger-VERSION.apk
+build/sharedledger-releases/vVERSION/latest.json
+build/sharedledger-releases/vVERSION/release-info.json
 ```
 
-The generator reads the package, version name, version code, and minimum SDK from the signed APK. It computes the file size and SHA-256 and writes the tag-specific download URL. Keep a version's existing files if you rerun the same command. A new binary needs a new version.
+The script pushes the tag `vVERSION` to the exact source commit. If the update repository is separate, the source tag stays in `origin` and the public release tag points to the recorded commit in the update repository. The release notes record the source commit and APK checksum. The script uploads the APK and `latest.json` to a draft, downloads and verifies both assets, publishes **SharedLedger vVERSION** as the latest stable release, and checks the public manifest and APK URLs. `release-info.json` is the local recovery record.
 
-### Publish on GitHub and test the updater
+### Build without publishing or resume a failed publication
 
-1. Open **Releases → Draft a new release** in the configured public repository. Create tag `v0.3.0` on the intended source commit and enter **SharedLedger 0.3.0** as the title.
-2. Attach `sharedledger-0.3.0.apk` and `latest.json` from the output directory. Add release notes, review both assets, then publish the release as **Latest** with prerelease disabled.
-3. Open the stable manifest URL while signed out. On an older APK signed with the same key and configured for that repository, use **Settings → About → App Updates → Check for updates**. Review the version and release notes, download the APK, then tap **Install update**. Android may ask for permission to install apps from SharedLedger. Return after granting it and confirm the standard installer.
-4. Confirm balances, history, shared-budget access, and pending sync after upgrading. The next normal build is `./scripts/release.sh 0.3.1`.
+```sh
+./scripts/release.sh VERSION --no-publish
+./scripts/release.sh VERSION --resume
+```
+
+Use `--no-publish` to build, sign, and verify local artifacts without GitHub CLI authentication. It still reads the public release history to choose a compatible version code. A build prepared from a dirty checkout is suitable for local testing. For publication, prepare from a clean checkout.
+
+If a publish step fails, keep the files in that version’s staging directory. Fix the reported problem and run `--resume` from the same clean source commit with the same repository and signing configuration. The script verifies the staged files again, reuses matching tags and draft assets, and completes the remaining steps with the same version code. Use a fresh version if the APK or intended source changes.
+
+### Test the updater
+
+1. Open the stable manifest URL while signed out. On an older APK signed with the same key and configured for that repository, choose **Settings → About → App Updates → Check for updates**.
+2. Review the version and release notes, download the APK, and tap **Install update**. Android may ask for permission to install apps from SharedLedger. Grant permission and confirm the standard installer.
+3. Confirm balances, history, shared-budget access, and pending sync after upgrading.
 
 [GitHub release asset links](https://docs.github.com/en/repositories/releasing-projects-on-github/linking-to-releases)
 

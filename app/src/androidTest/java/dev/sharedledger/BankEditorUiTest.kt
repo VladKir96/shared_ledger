@@ -14,6 +14,7 @@ import dev.sharedledger.domain.id
 import dev.sharedledger.domain.money
 import dev.sharedledger.presentation.LedgerViewModel
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -48,6 +49,13 @@ class BankEditorUiTest {
             await(hasText(budget.name))
             open(EntryType.EXPENSE, "RSD", "2500")
             assertAccount("21.25")
+            click(ui.onNodeWithTag("bank-account-amount-calculator").performScrollTo())
+            listOf("+", "0", ".", "2", "5", "=").forEach { key ->
+                click(ui.onNodeWithTag("calculator-key-$key").performScrollTo())
+            }
+            click(ui.onNodeWithTag("calculator-apply"))
+            assertAccount("21.5")
+            ui.onNodeWithTag("transaction-amount").assertTextContains("2500")
             correct("21.50", "116.2791")
             ui.onNodeWithTag("transaction-amount").assertTextContains("2500")
             ui.onNodeWithText("Note (optional)").performScrollTo().performTextInput("Bank debit")
@@ -83,6 +91,61 @@ class BankEditorUiTest {
             ui.onNodeWithText(income).assertIsDisplayed()
             ui.onNodeWithText("+" + money("1050".toBigDecimal(), "USD") + " · +" +
                 money("100000".toBigDecimal(), "RUB")).assertIsDisplayed()
+        } finally {
+            if (previous != null) runBlocking {
+                repo.preferences { it.copy(activeBudget = previous.activeBudget, lastAccount = previous.lastAccount) }
+            }
+        }
+    }
+
+    @Test fun editsTransferFromEitherCurrencyField() {
+        lateinit var vm: LedgerViewModel
+        ui.activityRule.scenario.onActivity { vm = ViewModelProvider(it)[LedgerViewModel::class.java] }
+        val repo = vm.repository
+        val budget = Budget(id(), "Transfer editor fixture", "RSD")
+        val from = Account(id(), budget.id, "RSD source", "RSD")
+        val to = Account(id(), budget.id, "USD target", "USD")
+        val previous = runBlocking {
+            repo.initialize()
+            val saved = repo.dao.preferences()
+            repo.dao.put(budget)
+            repo.saveAccount(from)
+            repo.saveAccount(to)
+            repo.preferences { it.copy(activeBudget = budget.id, lastAccount = from.id) }
+            saved
+        }
+        try {
+            await(hasText(budget.name))
+            click(ui.onNodeWithContentDescription("Transfer"))
+            choose("To account", "USD target · USD")
+            val sent = ui.onNodeWithTag("transaction-amount")
+            val received = ui.onNodeWithTag("transfer-received-amount")
+            sent.performScrollTo().performTextReplacement("12000")
+            click(ui.onNodeWithTag("transfer-received-amount-calculator").performScrollTo())
+            listOf("2", "0", "0", "÷", "2", "=").forEach { key ->
+                click(ui.onNodeWithTag("calculator-key-$key").performScrollTo())
+            }
+            click(ui.onNodeWithTag("calculator-apply"))
+            received.assertTextContains("100")
+            sent.assertTextContains("12000")
+            click(ui.onNodeWithText("Save transfer").assertIsEnabled())
+            await(hasTestTag("tab-history"))
+            click(ui.onNodeWithTag("tab-history"))
+            val day = hasTestTag("history-group-${LocalDate.now()}")
+            ui.onNodeWithTag("history-list").performScrollToNode(day)
+            click(ui.onNode(day))
+            val row = hasText("Transfer") and hasText("USD target", substring = true) and hasClickAction()
+            ui.onNodeWithTag("history-list").performScrollToNode(row)
+            click(ui.onNode(row))
+            click(ui.onNodeWithText("Edit"))
+            sent.assertTextContains("12000")
+            received.assertTextContains("100")
+            received.performScrollTo().performTextReplacement("99,50")
+            click(ui.onNodeWithText("Save changes").assertIsEnabled())
+            await(hasTestTag("tab-history"))
+            val entry = runBlocking { repo.dao.entries(budget.id).single() }
+            assertEquals("12000", entry.accountAmount)
+            assertEquals("99.5", entry.destinationAmount)
         } finally {
             if (previous != null) runBlocking {
                 repo.preferences { it.copy(activeBudget = previous.activeBudget, lastAccount = previous.lastAccount) }
