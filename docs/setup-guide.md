@@ -488,9 +488,15 @@ Transfers count as transactions and are excluded from income and expenses. A tra
 
 ### Entering amounts
 
-Tap any transaction, debit, credit, or transfer amount to open the Android numeric keyboard. Use a period or comma for the decimal separator. Android’s text selection menu supports copying, pasting, and replacing an amount.
+Tap any transaction, debit, credit, or transfer amount to open the Android numeric keyboard. Amount fields display values such as `1,234,567.89`. Type a period or comma to enter a decimal. Android’s text selection menu supports copying, pasting, and replacing an amount. When pasting, a value such as `1,234` means one thousand two hundred thirty-four.
 
 Tap the calculator beside an amount field to open it with that field’s value. Use the arithmetic keys or paste a number into the calculator. **000** appends three zeros to the number you are entering. Select **Use amount** to return the result to that field. **Cancel** keeps the original value.
+
+### Comparing histories in Analytics
+
+**Account balance history** starts with the balance entering the period and shows the closing balance of each bucket. Use **Accounts** to compare accounts. Each currency gets its own axis, and each balance includes all activity in that account.
+
+**Category history** shows periodic expense or income totals in the budget currency using the saved conversions and active filters. Use **Categories** to compare categories. Days with no transactions show zero, and missing conversions appear as pending or partial amounts. Tap either chart to see the amounts for that point. Weeks and months use daily buckets, quarters use weekly buckets, and longer ranges use calendar months or groups of months. A single day uses one daily bucket because transactions store the date.
 
 ### Recording bank conversions
 
@@ -729,7 +735,7 @@ The script pushes the tag `vVERSION` to the exact source commit. If the update r
 
 Use `--no-publish` to build, sign, and verify local artifacts without GitHub CLI authentication. It still reads the public release history to choose a compatible version code. A build prepared from a dirty checkout is suitable for local testing. For publication, prepare from a clean checkout.
 
-If a publish step fails, keep the files in that version’s staging directory. Fix the reported problem and run `--resume` from the same clean source commit with the same repository and signing configuration. The script verifies the staged files again, reuses matching tags and draft assets, and completes the remaining steps with the same version code. Use a fresh version if the APK or intended source changes.
+If a publish step fails, keep the files in that version’s staging directory. The error includes the GitHub CLI operation and its exit status. Fix the reported problem and run `--resume` with the same repository and signing configuration. The staged source must match the pushed tag or the exact clean checkout that prepared the release. The script verifies the staged files and any uploaded assets, uploads missing assets, and completes the remaining steps with the same version code. Use a fresh version if the APK or intended source changes.
 
 ### Test the updater
 

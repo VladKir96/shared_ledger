@@ -452,8 +452,12 @@ def release(args):
         provenance = target / "release-info.json"
         if resume:
             info = json.loads(provenance.read_text(encoding="utf-8"))
-            if not source["sourceCommit"] or any(info.get(k) != v for k, v in source.items()) or info.get("releaseRepository") != repo:
-                raise ReleaseError("Resume from the exact clean source and repositories recorded when the release was staged.")
+            commit = info.get("sourceCommit")
+            if (not isinstance(commit, str) or not COMMIT.fullmatch(commit)
+                    or info.get("sourceRepository") != source["sourceRepository"] or info.get("releaseRepository") != repo):
+                raise ReleaseError("The staged release does not record a verified source commit for these repositories.")
+            source = dict(source, sourceCommit=commit)
+            publication.check_source(source, tag, resume=True)
             meta = verify_staged(apk, index, info, args.version, repo, tools, env, signer, cloud)
             target_commit = info.get("releaseCommit") or publication.target_commit(source)
             if not COMMIT.fullmatch(target_commit):
@@ -479,7 +483,7 @@ def release(args):
                 if not (existing := publication.find_release(tag)) or existing["draft"]:
                     check_version()
                 release_url = publication.publish(source, target_commit, tag, apk, index, meta, stage, check_version,
-                    lambda: verify_published(repo, tag, apk, meta, stage))
+                    lambda: verify_published(repo, tag, apk, meta, stage), resume=resume)
             except (ReleaseError, OSError, URLError, ValueError, KeyError) as error:
                 raise ReleaseError(f"{error}\nArtifacts retained at {target}. Retry with ./scripts/release.sh {args.version} --resume.") from None
 
@@ -549,19 +553,25 @@ def verify_staged(apk, index, info, version, repo, tools, env, signer, cloud):
 def verify_published(repo, tag, apk, meta, stage):
     stable = manifest_url(repo)
     versioned = asset_url(repo, tag, "latest.json")
-    for attempt in range(4):
+    for delay in (0, 1, 2, 4, 8, 16):
+        if delay:
+            time.sleep(delay)
         try:
-            if public_json(stable, 65536) != meta or public_json(versioned, 65536) != meta:
-                raise ReleaseError("The public latest or versioned update manifest does not match the verified release.")
+            release = public_json(f"{GITHUB_API}/repos/{repo}/releases/latest")
+            if (release.get("tag_name") != tag or release.get("draft") is not False or release.get("prerelease") is not False):
+                raise ReleaseError(f"GitHub's public latest stable release is not {tag}.")
+            if public_json(versioned, 65536) != meta:
+                raise ReleaseError("The public versioned update manifest differs from the staged release.")
+            if public_json(stable, 65536) != meta:
+                raise ReleaseError("The stable update URL is still serving a different manifest.")
             downloaded = stage / "published.apk"
             public_file(meta["apkUrl"], downloaded)
             if downloaded.stat().st_size != apk.stat().st_size or sha256(downloaded) != meta["sha256"]:
                 raise ReleaseError("The public APK does not match the verified release.")
             return
         except (ReleaseError, URLError, ValueError):
-            if attempt == 3:
+            if delay == 16:
                 raise
-            time.sleep(2 ** attempt)
 
 
 def main():

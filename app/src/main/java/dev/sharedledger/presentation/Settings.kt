@@ -207,15 +207,18 @@ private fun Accounts(state: LedgerState, vm: LedgerViewModel) {
         var opening by remember { mutableStateOf(account.opening) }
         var icon by remember { mutableStateOf(account.icon) }
         var color by remember { mutableLongStateOf(account.color) }
-        EditDialog("Account", { editor = null }, name.isNotBlank(), {
+        val openingAmount = parseCurrencyInput(opening)
+        EditDialog("Account", { editor = null }, name.isNotBlank() && openingAmount != null, {
             vm.execute("Account saved", { editor = null }) {
-                vm.repository.saveAccount(account.copy(name = name, currency = currency, type = type, opening = opening, icon = icon, color = color))
+                vm.repository.saveAccount(account.copy(name = name, currency = currency, type = type,
+                    opening = requireNotNull(openingAmount).storage(), icon = icon, color = color))
             }
         }) {
             Field(tr("Name"), name, { name = it })
             Select("Type", type, AccountType.entries, { it.label() }, Modifier.fillMaxWidth()) { type = it }
             Select("Currency", currency, currencyCodes, { it }, Modifier.fillMaxWidth()) { currency = it }
-            Field(tr("Opening balance"), opening, { opening = it })
+            MonetaryTextField(tr("Opening balance"), opening, { opening = it }, Modifier.fillMaxWidth(),
+                keyboardType = androidx.compose.ui.text.input.KeyboardType.Text)
             IconColor(icon, { icon = it }, color, { color = it })
         }
     }

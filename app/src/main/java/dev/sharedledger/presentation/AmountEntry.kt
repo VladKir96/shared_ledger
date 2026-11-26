@@ -2,11 +2,7 @@ package dev.sharedledger.presentation
 
 import android.content.ClipData
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.relocation.BringIntoViewRequester
-import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Backspace
@@ -18,27 +14,22 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import dev.sharedledger.R
-import dev.sharedledger.domain.LedgerFormats
 import dev.sharedledger.domain.calculate
-import dev.sharedledger.domain.normalizeAmountInput
+import dev.sharedledger.domain.canonicalAmountEdit
+import dev.sharedledger.domain.groupAmount
 import dev.sharedledger.domain.parseCurrencyInput
 import dev.sharedledger.domain.storage
 import kotlinx.coroutines.launch
 import java.math.BigDecimal
-import java.text.DecimalFormatSymbols
 
 @Composable
 internal fun AmountField(
@@ -54,17 +45,7 @@ internal fun AmountField(
     var showCalculator by rememberSaveable { mutableStateOf(false) }
     val focus = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
-    val requester = remember { BringIntoViewRequester() }
-    var focused by remember { mutableStateOf(false) }
-    val keyboardHeight = WindowInsets.ime.getBottom(LocalDensity.current)
-    LaunchedEffect(focused, keyboardHeight) {
-        if (focused) requester.bringIntoView()
-    }
-    OutlinedTextField(value, { if (it.length <= 120) onChange(it) },
-        modifier = modifier.testTag(tag).bringIntoViewRequester(requester).onFocusChanged { focused = it.isFocused },
-        label = { Text(label) }, enabled = enabled, isError = isError, singleLine = true,
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Done),
-        keyboardActions = KeyboardActions(onDone = { focus.clearFocus(); keyboard?.hide() }),
+    MonetaryTextField(label, value, onChange, modifier.testTag(tag), enabled = enabled, isError = isError,
         trailingIcon = {
             IconButton({
                 keyboard?.hide()
@@ -93,14 +74,13 @@ private fun AmountCalculator(
     onDismiss: () -> Unit,
     onApply: (String) -> Unit
 ) {
-    var expression by rememberSaveable { mutableStateOf(normalizeAmountInput(initial).orEmpty()) }
+    var expression by rememberSaveable { mutableStateOf(canonicalAmountEdit(initial).orEmpty()) }
     var evaluated by rememberSaveable { mutableStateOf(false) }
     var invalidPaste by rememberSaveable { mutableStateOf(false) }
     val result = remember(expression) { calculate(expression) }
     val applicable = result?.let(validate)
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
-    val symbols = DecimalFormatSymbols.getInstance(LedgerFormats.locale)
 
     fun press(key: String) {
         invalidPaste = false
@@ -129,9 +109,9 @@ private fun AmountCalculator(
         text = {
             Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(formatCalculator(expression, symbols).ifEmpty { "0" }, Modifier.fillMaxWidth(),
+                Text(calculatorNumber.replace(expression) { groupAmount(it.value) }.ifEmpty { "0" }, Modifier.fillMaxWidth(),
                     textAlign = TextAlign.End, style = MaterialTheme.typography.bodyMedium)
-                Text(result?.storage()?.let { formatCalculator(it, symbols) } ?: "—",
+                Text(result?.storage()?.let(::groupAmount) ?: "—",
                     Modifier.fillMaxWidth().testTag("calculator-result"),
                     textAlign = TextAlign.End, style = MaterialTheme.typography.headlineSmall, maxLines = 2)
                 Row(Modifier.align(Alignment.End)) {
@@ -142,7 +122,7 @@ private fun AmountCalculator(
                     }
                     IconButton({ scope.launch {
                         val pasted = clipboard.getClipEntry()?.clipData?.getItemAt(0)?.text?.toString()
-                            ?.let(::normalizeAmountInput)
+                            ?.let(::canonicalAmountEdit)
                         invalidPaste = pasted == null
                         if (pasted != null) { expression = pasted; evaluated = false }
                     } }) {
@@ -160,7 +140,7 @@ private fun AmountCalculator(
                                 .testTag("calculator-key-$key"), contentPadding = PaddingValues(2.dp)) {
                                 when (key) {
                                     "⌫" -> Icon(Icons.AutoMirrored.Outlined.Backspace, stringResource(R.string.editor_backspace))
-                                    else -> Text(if (key == ".") symbols.decimalSeparator.toString() else key)
+                                    else -> Text(key)
                                 }
                             }
                         }
@@ -175,8 +155,4 @@ private fun AmountCalculator(
         } })
 }
 
-private fun formatCalculator(expression: String, symbols: DecimalFormatSymbols): String =
-    Regex("[0-9]+(?:\\.[0-9]*)?").replace(expression) { token ->
-        val whole = token.value.substringBefore('.').reversed().chunked(3).joinToString(symbols.groupingSeparator.toString()).reversed()
-        if ('.' in token.value) whole + symbols.decimalSeparator + token.value.substringAfter('.') else whole
-    }
+private val calculatorNumber = Regex("[0-9]+(?:\\.[0-9]*)?")

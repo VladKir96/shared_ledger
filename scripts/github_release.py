@@ -7,6 +7,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import time
 from urllib.parse import quote
 
 from generate_update_manifest import REPO, ReleaseError, sha256
@@ -23,7 +24,9 @@ def command(*args, cwd=None, env=None):
             secret = (env or os.environ).get(key)
             if secret:
                 details = details.replace(secret, "[redacted]")
-        raise ReleaseError(f"{Path(args[0]).name} {args[1]} failed (exit {proc.returncode}). {details}")
+        details = re.sub(r"\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]+", "[redacted]", details)
+        action = " ".join(args[1:3]) if args[1] == "release" else str(args[1])
+        raise ReleaseError(f"{Path(args[0]).name} {action} failed (exit {proc.returncode}). {details}")
     return proc.stdout.strip()
 
 
@@ -97,6 +100,18 @@ class GitHubPublication:
             raise ReleaseError(f"Multiple GitHub drafts or releases already use {tag}.")
         return matches[0] if matches else None
 
+    def confirm_draft(self, tag, marker):
+        for delay in (0, 1, 2, 4, 8):
+            if delay:
+                time.sleep(delay)
+            draft = self.find_release(tag)
+            if draft is None:
+                continue
+            if not draft["draft"] or marker not in (draft.get("body") or ""):
+                raise ReleaseError(f"The GitHub release for {tag} does not match the newly created draft.")
+            return draft
+        raise ReleaseError(f"GitHub accepted draft creation for {tag}, but the draft is not visible yet.")
+
     def remote_tag(self, remote, tag):
         ref = f"refs/tags/{tag}"
         lines = self.git("ls-remote", remote, ref, f"{ref}^{{}}").splitlines()
@@ -116,12 +131,21 @@ class GitHubPublication:
         if require_remote and (not origin or not target):
             raise ReleaseError(f"GitHub has not confirmed all required refs for {tag}.")
 
+    def check_source(self, source, tag, resume):
+        current = source_snapshot(self.root)
+        if current == source:
+            return
+        if (resume and current["sourceRepository"].lower() == source["sourceRepository"].lower()
+                and self.remote_tag("origin", tag) == source["sourceCommit"]):
+            return
+        raise ReleaseError("Use the staged source checkout or a matching pushed source tag before publishing.")
+
     def push_tags(self, source, tag, target_commit):
         self.check_tags(source, tag, target_commit, resume=True)
         ref = f"refs/tags/{tag}"
-        if not self.git("tag", "--list", tag):
-            self.git("tag", tag, source["sourceCommit"])
         if not self.remote_tag("origin", tag):
+            if not self.git("tag", "--list", tag):
+                self.git("tag", tag, source["sourceCommit"])
             helper = f"!{shlex.quote(str(self.gh))} auth git-credential"
             self.git("-c", "credential.helper=", "-c", f"credential.https://github.com.helper={helper}",
                      "push", "--no-follow-tags", "origin", f"{ref}:{ref}")
@@ -132,11 +156,14 @@ class GitHubPublication:
                          "--field", f"sha={target_commit}")
         self.check_tags(source, tag, target_commit, resume=True, require_remote=True)
 
-    def publish(self, source, target_commit, tag, apk, index, meta, staging, check_version, verify_public):
+    def publish(self, source, target_commit, tag, apk, index, meta, staging, check_version, verify_public, *, resume=False):
         marker = f"Source commit: {source['sourceCommit']}\nAPK SHA-256: {meta['sha256']}"
         prior = self.find_release(tag)
         if prior and marker not in (prior.get("body") or ""):
             raise ReleaseError(f"The existing GitHub release for {tag} does not match these staged artifacts.")
+        if prior and prior["prerelease"]:
+            raise ReleaseError(f"GitHub release {tag} is marked as a prerelease.")
+        self.check_source(source, tag, resume)
         if prior is None or prior["draft"]:
             self.source_ready(source, tag)
             self.push_tags(source, tag, target_commit)
@@ -144,44 +171,77 @@ class GitHubPublication:
             notes = staging / "release-notes.md"
             entries = meta["releaseNotes"] or [f"SharedLedger {tag} for Android."]
             notes.write_text("\n".join(f"- {entry}" for entry in entries) + "\n\n" + marker + "\n", encoding="utf-8")
+            print(f"Creating the GitHub draft for {tag}.", flush=True)
             self.cli("release", "create", tag, "--repo", self.repo, "--verify-tag", "--draft", "--title",
                      f"SharedLedger {tag}", "--notes-file", notes)
-            prior = self.find_release(tag)
-            if prior is None or not prior["draft"] or marker not in (prior.get("body") or ""):
-                raise ReleaseError("Unable to verify the newly created GitHub draft.")
-        if prior["prerelease"]:
-            raise ReleaseError(f"GitHub release {tag} is marked as a prerelease.")
-        if prior["draft"]:
-            self.upload_and_verify(tag, prior, (apk, index), staging)
+            prior = self.confirm_draft(tag, marker)
+        self.check_tags(source, tag, target_commit, resume=True, require_remote=True)
+
+        assets = (apk, index)
+        requires_upload = not self.has_uploaded_assets(prior, assets)
+        if requires_upload and not prior["draft"]:
             check_version()
-            if source_snapshot(self.root) != source:
-                raise ReleaseError("The source changed before publishing. Restore the staged source and resume.")
-            self.cli("release", "edit", tag, "--repo", self.repo, "--draft=false", "--latest")
+        if prior["draft"] or requires_upload:
+            print(f"Verifying and uploading GitHub assets for {tag}.", flush=True)
+            self.upload_and_verify(tag, prior, assets, staging)
+            check_version()
+            self.check_source(source, tag, resume)
+            self.check_tags(source, tag, target_commit, resume=True, require_remote=True)
+            print(f"Marking the verified GitHub release {tag} as latest.", flush=True)
+            if prior["draft"]:
+                self.cli("release", "edit", tag, "--repo", self.repo, "--draft=false", "--latest")
+            else:
+                self.cli("release", "edit", tag, "--repo", self.repo, "--latest")
         released = self.find_release(tag)
-        if released is None or released["draft"] or released["prerelease"]:
-            raise ReleaseError(f"GitHub did not publish {tag} as a stable release.")
+        if (released is None or released["id"] != prior["id"] or released["draft"] or released["prerelease"]
+                or not self.has_uploaded_assets(released, assets)):
+            raise ReleaseError(f"GitHub did not publish {tag} as a stable release with both assets.")
         self.check_tags(source, tag, target_commit, resume=True, require_remote=True)
         verify_public()
         return f"https://github.com/{self.repo}/releases/tag/{tag}"
 
-    def upload_and_verify(self, tag, draft, assets, staging):
-        existing = {asset["name"]: asset for asset in draft["assets"]}
+    @staticmethod
+    def has_uploaded_assets(release, assets):
+        actual = {asset["name"]: (asset["state"], asset["size"]) for asset in release["assets"]}
+        return all(actual.get(path.name) == ("uploaded", path.stat().st_size) for path in assets)
+
+    def upload_and_verify(self, tag, release, assets, staging):
+        existing = {asset["name"]: asset for asset in release["assets"]}
         if existing.keys() - {path.name for path in assets}:
-            raise ReleaseError("The existing draft contains unexpected release assets.")
+            raise ReleaseError("The existing GitHub release contains unexpected assets.")
+        uploaded, missing, starters = [], [], []
         for path in assets:
             asset = existing.get(path.name)
-            if asset and asset.get("state") == "starter" and asset["size"] == 0:
-                self.cli("release", "delete-asset", tag, path.name, "--repo", self.repo, "--yes")
-                asset = None
             if asset is None:
-                self.cli("release", "upload", tag, path, "--repo", self.repo)
-            elif asset["size"] != path.stat().st_size:
-                raise ReleaseError(f"The existing draft asset {path.name} has a different size.")
-        output = staging / "draft"
+                missing.append(path)
+            elif release["draft"] and asset["state"] == "starter" and asset["size"] == 0:
+                starters.append(path)
+                missing.append(path)
+            elif asset["state"] == "uploaded" and asset["size"] == path.stat().st_size:
+                uploaded.append(path)
+            else:
+                raise ReleaseError(f"The existing GitHub asset {path.name} has an unexpected state or size.")
+        if missing:
+            if uploaded:
+                self.verify_assets(tag, uploaded, staging / "existing-assets")
+            for path in starters:
+                self.cli("release", "delete-asset", tag, path.name, "--repo", self.repo, "--yes")
+            if release["draft"]:
+                self.cli("release", "upload", tag, *missing, "--repo", self.repo)
+            else:
+                # A public manifest should only be added after its APK can be verified.
+                for path in missing:
+                    self.cli("release", "upload", tag, path, "--repo", self.repo)
+                    if path != assets[-1]:
+                        self.verify_assets(tag, [path], staging / "recovered-apk")
+        self.verify_assets(tag, assets, staging / "release-assets")
+
+    def verify_assets(self, tag, assets, output):
         output.mkdir()
+        patterns = [arg for path in assets for arg in ("--pattern", path.name)]
         self.cli("release", "download", tag, "--repo", self.repo, "--dir", output,
-                 "--pattern", assets[0].name, "--pattern", assets[1].name)
+                 *patterns)
         for path in assets:
             copy = output / path.name
             if not copy.is_file() or sha256(copy) != sha256(path):
-                raise ReleaseError(f"The uploaded draft asset {path.name} does not match the staged file.")
+                raise ReleaseError(f"The uploaded GitHub asset {path.name} does not match the staged file.")

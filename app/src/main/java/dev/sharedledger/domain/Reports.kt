@@ -70,15 +70,20 @@ fun accountBalance(account: Account, entries: List<Entry>, through: LocalDate? =
     var pending = 0
     entries.forEach { entry ->
         if (entry.deletedAt != null || through != null && entry.date > through.toString()) return@forEach
-        if (entry.accountId == account.id) {
-            val amount = entry.accountAmount?.decimal()
-            if (amount == null) pending++ else value += if (entry.type == EntryType.INCOME) amount else amount.negate()
-        } else if (entry.destinationId == account.id) {
-            val amount = entry.destinationAmount?.decimal()
-            if (amount == null) pending++ else value += amount
-        }
+        val movement = accountMovement(account.id, entry) ?: return@forEach
+        pending += movement.pending
+        value += movement.value
     }
     return Balance(value, pending)
+}
+
+internal fun accountMovement(accountId: String, entry: Entry): Balance? {
+    val value = when (accountId) {
+        entry.accountId -> entry.accountAmount?.decimal()?.let { if (entry.type == EntryType.INCOME) it else it.negate() }
+        entry.destinationId -> entry.destinationAmount?.decimal()
+        else -> return null
+    }
+    return if (value == null) Balance(BigDecimal.ZERO, 1) else Balance(value, 0)
 }
 
 data class Filters(

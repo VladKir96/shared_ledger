@@ -5,6 +5,27 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class AmountInputTest {
+    @Test fun displayedGroupingPreservesPartialInputAndExactDecimals() {
+        mapOf(
+            "" to "", "100" to "100", "1000" to "1,000", "12500" to "12,500",
+            "1500000" to "1,500,000", "1234567.89" to "1,234,567.89",
+            "-1500000.00" to "-1,500,000.00", "1000000." to "1,000,000.",
+            "1000000000000000.000100" to "1,000,000,000,000,000.000100"
+        ).forEach { (raw, formatted) ->
+            assertEquals(formatted, groupAmount(raw))
+            assertEquals(raw, canonicalAmountEdit(formatted))
+        }
+        assertEquals(".", canonicalAmountEdit(","))
+        assertEquals("32.00", canonicalAmountEdit("32,00"))
+        assertEquals("1000", canonicalAmountEdit("1,000"))
+        assertEquals("2500.25", canonicalAmountEdit("2\u202f500,25"))
+        assertEquals("1234.56", canonicalAmountEdit("1.234,56"))
+        assertEquals(".050", canonicalAmountEdit(",050"))
+        assertEquals("-.0", canonicalAmountEdit("−,0"))
+        assertEquals("1234.50".toBigDecimal(), parseCurrencyInput("1234.50"))
+        assertNull(canonicalAmountEdit("1 23,45"))
+    }
+
     @Test fun decimalTypingAndUnambiguousClipboardGrouping() {
         mapOf(
             "114,50" to "114.50", "114.50" to "114.50", ",5" to "0.5", "1," to "1", "1,234" to "1.234",

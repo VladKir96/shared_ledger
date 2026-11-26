@@ -296,4 +296,10 @@
     <string name="editor_budget_rate">Rate in %1$s per %2$s</string>
     <string name="editor_budget_amount">Budget amount in %1$s</string>
     <string name="editor_rate_done">Done</string>
+    <string name="analytics_history_select_series">Select series</string>
+    <string name="analytics_history_empty">No history in this period</string>
+    <string name="analytics_history_choose_series">Choose a different date range or series.</string>
+    <string name="analytics_history_all_account_activity">Balances include all activity in each selected account.</string>
+    <string name="analytics_history_no_balance">No balance recorded</string>
+    <string name="analytics_history_partial_total">Partial total</string>
 </resources>

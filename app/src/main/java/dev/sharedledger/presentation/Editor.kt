@@ -187,7 +187,7 @@ fun EditorScreen(state: LedgerState, vm: LedgerViewModel, type: EntryType, entry
         }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            AmountField(stringResource(R.string.editor_transaction_amount, currency), amountText, ::changeOriginal,
+            AmountField(stringResource(R.string.editor_transaction_amount, currency), amountText, { changeOriginal(it) },
                 Modifier.fillMaxWidth(), tag = "transaction-amount", enabled = allowed,
                 isError = amountText.isNotBlank() && original == null,
                 calculatorValue = { originalAmount(it).takeIf(BigDecimal::isBudgetMagnitude) })

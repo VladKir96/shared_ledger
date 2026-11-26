@@ -92,7 +92,12 @@ class BudgetValuationUiTest {
         ui.onNodeWithTag(tag).performScrollTo().performTextReplacement(value)
 
     private fun assertValue(tag: String, value: String) {
-        await(hasTestTag(tag) and hasText(value))
+        try {
+            await(hasTestTag(tag) and hasText(value))
+        } catch (timeout: ComposeTimeoutException) {
+            ui.onNodeWithTag(tag).assertTextContains(value)
+            throw timeout
+        }
         ui.onNodeWithTag(tag).assertTextContains(value)
     }
 

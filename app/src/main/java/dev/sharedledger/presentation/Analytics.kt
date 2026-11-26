@@ -9,15 +9,19 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import dev.sharedledger.data.Entry
+import dev.sharedledger.data.categoryColors
 import dev.sharedledger.domain.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -32,8 +36,12 @@ private data class Point(val label: String, val a: BigDecimal, val b: BigDecimal
                          val approximateA: Boolean = false, val approximateB: Boolean = false)
 private data class Report(
     val trends: List<Point>, val months: List<Point>, val memberSpend: List<Point>, val accountSpend: List<Point>,
-    val balances: List<Point>, val categoryHistory: List<Point>, val averageDay: BigDecimal, val averageMonth: BigDecimal,
+    val averageDay: BigDecimal, val averageMonth: BigDecimal,
     val largest: Entry?, val largestCategory: String?, val difference: BigDecimal?, val approximateDifference: Boolean
+)
+
+private val historySelectionSaver = Saver<Set<String>?, ArrayList<String>>(
+    save = { it?.let(::ArrayList) }, restore = { it.toSet() }
 )
 
 @Composable
@@ -45,10 +53,8 @@ fun AnalyticsScreen(state: LedgerState, vm: LedgerViewModel, drill: (EntryType, 
     val names = remember(categories) { categories.associate { it.id to it.name } }
     val members = remember(state.ledger.members) { state.ledger.members.associate { it.userId to it.name } }
     val accountNames = remember(accounts) { accounts.associate { it.id to it.name } }
-    var categoryId by remember(budget.id, categories) { mutableStateOf(state.filters.category ?: categories.firstOrNull { it.type == EntryType.EXPENSE }?.id) }
-    var accountId by remember(budget.id, accounts) { mutableStateOf(state.filters.account ?: accounts.firstOrNull()?.id) }
     val currency = budget.currency
-    val report by produceState<Report?>(null, state, categoryId, accountId) {
+    val report by produceState<Report?>(null, state) {
         value = withContext(Dispatchers.Default) {
             val boundary = state.period.span
             val fallback = LocalDate.now()
@@ -78,14 +84,6 @@ fun AnalyticsScreen(state: LedgerState, vm: LedgerViewModel, drill: (EntryType, 
                 val sums = totals(monthGroups[index].orEmpty(), currency)
                 Point(monthLabel(start, end), sums.income, sums.expenses, sums.approximateIncome, sums.approximateExpenses)
             }
-            val history = buckets.map { (index, start, end) ->
-                val sums = totals(monthGroups[index].orEmpty().filter { it.categoryId == categoryId }, currency)
-                Point(monthLabel(start, end), sums.expenses, approximateA = sums.approximateExpenses)
-            }
-            val account = accounts.find { it.id == accountId }
-            val balance = if (account == null) emptyList() else buckets.map { (_, start, end) ->
-                Point(monthLabel(start, end), accountBalance(account, state.ledger.entries, minOf(to, end.atEndOfMonth())).value)
-            }
             val past = totals(state.comparison, currency)
             val delta = if (state.period.mode == PeriodMode.ALL || past.expenses.signum() == 0 ||
                 past.pending > 0 || state.totals.pending > 0) null else
@@ -99,7 +97,7 @@ fun AnalyticsScreen(state: LedgerState, vm: LedgerViewModel, drill: (EntryType, 
                 Point(accountNames[key] ?: "Account", sum, approximateA = key in accountEstimates)
             }
             Report(trends, bars, memberSpend, accountSpend,
-                balance, history, state.totals.expenses.divide(BigDecimal.valueOf(days), MathContext.DECIMAL64),
+                state.totals.expenses.divide(BigDecimal.valueOf(days), MathContext.DECIMAL64),
                 state.totals.expenses.divide(BigDecimal.valueOf(months), MathContext.DECIMAL64),
                 entries.filter { it.type == EntryType.EXPENSE && it.budgetCurrency == currency && it.budgetAmount != null }
                     .maxByOrNull { it.budgetAmount!!.decimal() },
@@ -107,7 +105,8 @@ fun AnalyticsScreen(state: LedgerState, vm: LedgerViewModel, drill: (EntryType, 
                 past.approximateExpenses || state.totals.approximateExpenses)
         }
     }
-    LazyColumn(contentPadding = PaddingValues(20.dp, 14.dp, 20.dp, 22.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+    LazyColumn(Modifier.testTag("analytics-list"), contentPadding = PaddingValues(20.dp, 14.dp, 20.dp, 22.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item { Text(tr("Analytics"), style = MaterialTheme.typography.headlineLarge) }
         item { PeriodControl(state.period, { vm.period.value = it }, true) }
         item {
@@ -143,22 +142,93 @@ fun AnalyticsScreen(state: LedgerState, vm: LedgerViewModel, drill: (EntryType, 
             item { ChartPanel(tr("Income vs. expenses"), it.months, currency, comparisons = true) }
             if (members.isNotEmpty()) item { Ranked(tr("Member contributions"), it.memberSpend, currency) }
             item { Ranked(tr("Spending by account"), it.accountSpend, currency) }
-            item { Panel(Modifier.fillMaxWidth()) {
-                Text(tr("Account balance history"), style = MaterialTheme.typography.titleLarge)
-                Select("Account", accountId, accounts.map { item -> item.id }, { key -> accountNames[key] ?: "Select an account" }, Modifier.fillMaxWidth()) { accountId = it }
-                val selected = accounts.find { item -> item.id == accountId }
-                if (selected != null) {
-                    Chart(it.balances, selected.currency, false)
-                    Text("Includes opening balance and account activity through each date.", style = MaterialTheme.typography.bodySmall)
-                }
-            } }
-            item { Panel(Modifier.fillMaxWidth()) {
-                Text(tr("Category history"), style = MaterialTheme.typography.titleLarge)
-                Select("Category", categoryId, categories.filter { item -> item.type == EntryType.EXPENSE }.map { item -> item.id },
-                    { key -> names[key] ?: "Select a category" }, Modifier.fillMaxWidth()) { categoryId = it }
-                Chart(it.categoryHistory, currency, false)
-            } }
         }
+        item("account-history") { AccountHistoryPanel(state) }
+        item("category-history") { CategoryHistoryPanel(state, currency) }
+    }
+}
+
+@Composable
+private fun AccountHistoryPanel(state: LedgerState) {
+    val accounts = state.ledger.accounts
+    var selection by rememberSaveable(state.budget?.id, stateSaver = historySelectionSaver) { mutableStateOf<Set<String>?>(null) }
+    val eligible = accounts.filter { state.filters.account == null || state.filters.account == it.id }
+    val selected = if (state.filters.account != null || selection == null) eligible.take(1).map { it.id }.toSet()
+        else selection.orEmpty().intersect(eligible.map { it.id }.toSet())
+    val colors = remember(accounts) {
+        accounts.groupBy { it.currency to it.color }.values.flatMap { sameColor ->
+            sameColor.sortedWith(compareBy({ it.createdAt }, { it.id })).mapIndexed { index, account ->
+                val alternatives = categoryColors.filter { it != account.color }
+                account.id to if (index == 0) account.color else alternatives[(index - 1) % alternatives.size]
+            }
+        }.toMap()
+    }
+    val filtered = eligible.filter { it.id in selected }.map { it.copy(color = colors.getValue(it.id)) }
+    val ledger = state.ledger.entries
+    val period = state.period
+    val today = LocalDate.now()
+    val history by key(state.budget?.id, filtered, period) {
+        produceState<Map<String, FinancialHistory>?>(null, filtered, period, ledger, today) {
+            value = withContext(Dispatchers.Default) { accountHistory(period, filtered, ledger, today = today) }
+        }
+    }
+    Panel(Modifier.fillMaxWidth().testTag("account-history-panel")) {
+        Text(tr("Account balance history"), style = MaterialTheme.typography.titleLarge)
+        if (state.filters.account == null) {
+            HistorySeriesPicker("Accounts", eligible.associate { it.id to "${it.name} · ${it.currency}" }, selected) { selection = it }
+        }
+        history?.let { groups ->
+            val available = groups.filterValues { it.series.isNotEmpty() }
+            if (available.isEmpty()) {
+                EmptyMessage(tr("No history in this period"), tr("Choose a different date range or series."), Icons.Outlined.BarChart)
+            } else {
+                Text(tr("Balances include all activity in each selected account."), style = MaterialTheme.typography.bodySmall)
+                available.entries.forEachIndexed { index, (currency, data) ->
+                    if (index > 0) HorizontalDivider()
+                    key(currency) { HistoryChart(data, currency, "account-history-chart-$currency") }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun CategoryHistoryPanel(state: LedgerState, currency: String) {
+    var type by rememberSaveable(state.budget?.id) { mutableStateOf(EntryType.EXPENSE) }
+    var expenses by rememberSaveable(state.budget?.id, stateSaver = historySelectionSaver) { mutableStateOf<Set<String>?>(null) }
+    var income by rememberSaveable(state.budget?.id, stateSaver = historySelectionSaver) { mutableStateOf<Set<String>?>(null) }
+    val categories = state.ledger.categories
+    val categoryFilter = state.filters.category
+    val direction = state.filters.type ?: categories.find { it.id == categoryFilter }?.type
+    val chartType = direction ?: type
+    val eligible = categories.filter { it.type == chartType && (categoryFilter == null || it.id == categoryFilter) }
+    val entries = state.entries
+    val selectedForType = if (chartType == EntryType.INCOME) income else expenses
+    val options = eligible.associate { it.id to it.name }
+    val selected = if (categoryFilter != null || selectedForType == null) {
+        setOfNotNull(entries.firstOrNull { it.categoryId in options }?.categoryId ?: eligible.firstOrNull()?.id)
+    } else selectedForType.intersect(options.keys)
+    val filtered = eligible.filter { it.id in selected }
+    val period = state.period
+    val today = LocalDate.now()
+    val history by key(state.budget?.id, filtered, period, chartType) {
+        produceState<FinancialHistory?>(null, filtered, period, entries, currency, chartType, today) {
+            value = withContext(Dispatchers.Default) { categoryHistory(period, filtered, entries, currency, chartType, today) }
+        }
+    }
+    Panel(Modifier.fillMaxWidth().testTag("category-history-panel")) {
+        Text(tr("Category history"), style = MaterialTheme.typography.titleLarge)
+        if (direction == null) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(type == EntryType.EXPENSE, { type = EntryType.EXPENSE }, { Text(tr("Expenses")) },
+                Modifier.testTag("category-history-expenses"))
+            FilterChip(type == EntryType.INCOME, { type = EntryType.INCOME }, { Text(tr("Income")) },
+                Modifier.testTag("category-history-income"))
+        }
+        if (categoryFilter == null) HistorySeriesPicker("Categories", options, selected) {
+            if (chartType == EntryType.INCOME) income = it else expenses = it
+        }
+        history?.let { HistoryChart(it, currency, "category-history-chart") }
     }
 }
 

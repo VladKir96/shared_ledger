@@ -117,12 +117,13 @@ private fun RecurringSettings(state: LedgerState, vm: LedgerViewModel) {
         var note by remember { mutableStateOf(rule.note) }
         val members = state.ledger.members.filter { it.active || it.userId == rule.payer }.associate { it.userId to it.name }
         var payer by remember { mutableStateOf(rule.payer ?: vm.repository.principal.value.takeIf { budget.principal != null }) }
+        val recurringAmount = parseCurrencyInput(amount)
         EditDialog(if (isNew) "Add recurring transaction" else "Edit recurring transaction", { editor = null },
-            parseMoney(amount)?.signum() == 1 && category in categoryNames && account in accountNames && interval.toIntOrNull() in 1..366 &&
+            recurringAmount?.signum() == 1 && category in categoryNames && account in accountNames && interval.toIntOrNull() in 1..366 &&
                 (end == null || end!! >= start), {
                 if (remind && Build.VERSION.SDK_INT >= 33) permission.launch(Manifest.permission.POST_NOTIFICATIONS)
                 vm.execute("Rule saved", { editor = null }) {
-                    vm.recurring.save(rule.copy(type = type, accountId = account, categoryId = category, amount = amount,
+                    vm.recurring.save(rule.copy(type = type, accountId = account, categoryId = category, amount = requireNotNull(recurringAmount).storage(),
                         currency = currency, frequency = frequency, interval = interval.toInt(), start = start.toString(), end = end?.toString(),
                         automatic = automatic, remind = remind, note = note, payer = payer))
                     enqueueRecurring(context)
@@ -134,7 +135,7 @@ private fun RecurringSettings(state: LedgerState, vm: LedgerViewModel) {
                 currency = accounts.first { wallet -> wallet.id == it }.currency
             }
             Select("Category", category, categoryNames.keys.toList(), { categoryNames[it] ?: "Choose category" }, Modifier.fillMaxWidth()) { category = it }
-            Field(tr("Amount"), amount, { amount = it })
+            MonetaryTextField(tr("Amount"), amount, { amount = it }, Modifier.fillMaxWidth())
             Select("Currency", currency, currencyCodes, { it }, Modifier.fillMaxWidth()) { currency = it }
             if (rule.nextIndex == 0L) {
                 Select("Frequency", frequency, Frequency.entries, { it.label() }, Modifier.fillMaxWidth()) { frequency = it }

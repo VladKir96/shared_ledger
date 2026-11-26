@@ -300,4 +300,10 @@
     <string name="editor_budget_rate">Курс в %1$s за 1 %2$s</string>
     <string name="editor_budget_amount">Сумма для бюджета в %1$s</string>
     <string name="editor_rate_done">Готово</string>
+    <string name="analytics_history_select_series">Выберите ряды</string>
+    <string name="analytics_history_empty">Нет истории за этот период</string>
+    <string name="analytics_history_choose_series">Выберите другой период или набор данных.</string>
+    <string name="analytics_history_all_account_activity">Балансы учитывают все операции по каждому выбранному счёту.</string>
+    <string name="analytics_history_no_balance">Баланс не записан</string>
+    <string name="analytics_history_partial_total">Неполный итог</string>
 </resources>

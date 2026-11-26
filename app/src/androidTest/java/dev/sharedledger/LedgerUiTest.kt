@@ -2,12 +2,15 @@ package dev.sharedledger
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.view.KeyEvent
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import dev.sharedledger.domain.EntryType
 import dev.sharedledger.presentation.LedgerViewModel
 import org.junit.Rule
@@ -33,7 +36,25 @@ class LedgerUiTest {
         ui.onNodeWithTag("transaction-amount-calculator").performClick()
         ui.onNodeWithTag("calculator-key-C").performScrollTo().performClick()
         ui.onNodeWithText("Cancel").performClick()
-        amount.assertTextContains("12,50")
+        assertAmount(amount, "12.50", "12.50")
+        amount.performTextReplacement("1500000")
+        assertAmount(amount, "1500000", "1,500,000")
+        amount.performTextInput(",")
+        assertAmount(amount, "1500000.", "1,500,000.")
+        amount.performTextInput("00")
+        assertAmount(amount, "1500000.00", "1,500,000.00")
+        amount.performSemanticsAction(SemanticsActions.SetSelection) { it(3, 3, true) }
+        amount.performTextInput("7")
+        assertAmount(amount, "15070000.00", "15,070,000.00")
+        amount.performSemanticsAction(SemanticsActions.SetSelection) { it(3, 3, false) }
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_DEL)
+        assertAmount(amount, "1070000.00", "1,070,000.00")
+        amount.performSemanticsAction(SemanticsActions.SetSelection) { it(0, "1070000.00".length, true) }
+        amount.performSemanticsAction(SemanticsActions.CopyText)
+        val copied = ui.runOnIdle {
+            ui.activity.getSystemService(ClipboardManager::class.java).primaryClip?.getItemAt(0)?.text.toString()
+        }
+        org.junit.Assert.assertEquals("1070000.00", copied.replace(",", ""))
         amount.performClick()
         ui.runOnIdle {
             ui.activity.getSystemService(ClipboardManager::class.java)
@@ -41,7 +62,7 @@ class LedgerUiTest {
         }
         amount.performTextClearance()
         amount.performSemanticsAction(SemanticsActions.PasteText)
-        amount.assertTextContains("2\u202f500,25")
+        assertAmount(amount, "2500.25", "2,500.25")
         selectCategory("Groceries")
         ui.onNodeWithText("Note (optional)").performScrollTo().performTextInput("UI groceries")
         ui.onNodeWithText("Save expense").assertIsEnabled().performSemanticsAction(SemanticsActions.OnClick)
@@ -54,7 +75,7 @@ class LedgerUiTest {
         }
         ui.onNodeWithTag("calculator-result").assertTextContains("1,002")
         ui.onNodeWithTag("calculator-apply").performClick()
-        amount.assertTextContains("1002")
+        assertAmount(amount, "1002", "1,002")
         selectCategory("Salary")
         ui.onNodeWithText("Save income").assertIsEnabled().performSemanticsAction(SemanticsActions.OnClick)
         ui.waitUntil(8_000) { ui.onAllNodesWithTag("add-income").fetchSemanticsNodes().isNotEmpty() }
@@ -67,6 +88,7 @@ class LedgerUiTest {
             val state = vm.state.value
             state.filters.query == "UI groceries" && state.entries.isNotEmpty() && state.entries.none { it.type == EntryType.INCOME }
         }
+        org.junit.Assert.assertEquals("2500.25", vm.state.value.entries.single().amount)
         ui.onNodeWithTag("history-list").performScrollToNode(hasTestTag("expand-all-groups"))
         ui.onNodeWithTag("expand-all-groups").performSemanticsAction(SemanticsActions.OnClick)
         ui.onNodeWithTag("history-list").performScrollToNode(hasText("Groceries"))
@@ -74,6 +96,12 @@ class LedgerUiTest {
         ui.onNodeWithText("Salary", substring = false).assertDoesNotExist()
         ui.onNodeWithTag("tab-analytics").performSemanticsAction(SemanticsActions.OnClick)
         ui.onNodeWithText("Period summary").assertIsDisplayed()
+    }
+
+    private fun assertAmount(node: SemanticsNodeInteraction, raw: String, displayed: String) {
+        val config = node.fetchSemanticsNode().config
+        org.junit.Assert.assertEquals(raw, config[SemanticsProperties.InputText].text)
+        org.junit.Assert.assertEquals(displayed, config[SemanticsProperties.EditableText].text)
     }
 
     private fun selectCategory(name: String) {

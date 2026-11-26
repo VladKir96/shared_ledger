@@ -298,4 +298,10 @@
     <string name="editor_budget_rate">Kurs u %1$s za 1 %2$s</string>
     <string name="editor_budget_amount">Iznos za budžet u %1$s</string>
     <string name="editor_rate_done">Gotovo</string>
+    <string name="analytics_history_select_series">Izaberite serije</string>
+    <string name="analytics_history_empty">Nema istorije u ovom periodu</string>
+    <string name="analytics_history_choose_series">Izaberite drugi period ili seriju.</string>
+    <string name="analytics_history_all_account_activity">Stanja obuhvataju sve transakcije na izabranim računima.</string>
+    <string name="analytics_history_no_balance">Stanje nije zabeleženo</string>
+    <string name="analytics_history_partial_total">Delimičan zbir</string>
 </resources>

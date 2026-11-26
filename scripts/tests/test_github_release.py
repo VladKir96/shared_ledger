@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -28,9 +29,13 @@ class GitHubFixture(github.GitHubPublication):
         self.uploads = {}
         self.calls = []
         self.fail_once = None
+        self.draft_visibility_delay = 0
 
     def api(self, endpoint, *args):
         if "/releases?" in endpoint:
+            if self.draft_visibility_delay and self.releases and self.releases[0]["draft"]:
+                self.draft_visibility_delay -= 1
+                return [[]]
             return [self.releases]
         if "/commits/" in endpoint:
             return {"sha": "b" * 40}
@@ -73,25 +78,27 @@ class GitHubFixture(github.GitHubPublication):
         action = args[1]
         if action == "create":
             assert "--draft" in args and "--verify-tag" in args
-            self.releases.append(dict(tag_name=TAG, draft=True, prerelease=False,
+            self.releases.append(dict(id=1, tag_name=TAG, draft=True, prerelease=False,
                                       body=args[-1].read_text(), assets=[]))
         elif action == "upload":
-            path = args[3]
-            if self.fail_once == path.name:
-                self.fail_once = None
-                if not any(asset["name"] == path.name for asset in self.releases[0]["assets"]):
-                    self.releases[0]["assets"].append(dict(name=path.name, size=0, state="starter"))
-                raise ReleaseError("simulated upload failure")
-            self.uploads[path.name] = path.read_bytes()
-            self.releases[0]["assets"].append(dict(name=path.name, size=path.stat().st_size, state="uploaded"))
+            for path in args[3:args.index("--repo")]:
+                if self.fail_once == path.name:
+                    self.fail_once = None
+                    if not any(asset["name"] == path.name for asset in self.releases[0]["assets"]):
+                        self.releases[0]["assets"].append(dict(name=path.name, size=0, state="starter"))
+                    raise ReleaseError("simulated upload failure")
+                self.uploads[path.name] = path.read_bytes()
+                self.releases[0]["assets"].append(dict(name=path.name, size=path.stat().st_size, state="uploaded"))
         elif action == "delete-asset":
             self.releases[0]["assets"] = [asset for asset in self.releases[0]["assets"] if asset["name"] != args[3]]
         elif action == "download":
             output = args[args.index("--dir") + 1]
-            for name, data in self.uploads.items():
-                (output / name).write_bytes(data)
+            for name in [args[i + 1] for i, arg in enumerate(args) if arg == "--pattern"]:
+                if name in self.uploads:
+                    (output / name).write_bytes(self.uploads[name])
         elif action == "edit":
-            assert "--draft=false" in args and "--latest" in args
+            assert ("--draft=false" in args) == self.releases[0]["draft"]
+            assert "--latest" in args
             self.releases[0]["draft"] = False
         else:
             raise AssertionError(args)
@@ -115,16 +122,16 @@ class PublishTest(unittest.TestCase):
         mocked.start()
         self.addCleanup(mocked.stop)
 
-    def publish(self):
+    def publish(self, resume=False):
         with tempfile.TemporaryDirectory(dir=self.root) as stage:
             return self.client.publish(SOURCE, self.client.target_commit(SOURCE), TAG, self.apk, self.index,
-                                       self.meta, Path(stage), self.version_check, self.public_check)
+                                       self.meta, Path(stage), self.version_check, self.public_check, resume=resume)
 
     def test_drafts_then_uploads_and_promotes_only_verified_assets(self):
         self.assertEqual(self.publish(), "https://github.com/fixture/ledger/releases/tag/v0.4.1")
         self.assertEqual(self.client.refs, {"local": SOURCE["sourceCommit"], "origin": SOURCE["sourceCommit"]})
         actions = [call[1] for call in self.client.calls if call[0] == "release"]
-        self.assertEqual(actions, ["create", "upload", "upload", "download", "edit"])
+        self.assertEqual(actions, ["create", "upload", "download", "edit"])
         self.public_check.assert_called_once()
         self.version_check.assert_called_once()
 
@@ -156,6 +163,43 @@ class PublishTest(unittest.TestCase):
             self.publish()
         self.assertTrue(self.client.releases[0]["draft"])
         self.assertEqual(self.client.uploads[self.apk.name], b"x" * self.apk.stat().st_size)
+
+    def test_waits_for_new_draft_to_be_visible_before_uploading(self):
+        self.client.draft_visibility_delay = 2
+        with patch.object(github.time, "sleep") as sleep:
+            self.publish()
+        self.assertEqual([call.args for call in sleep.call_args_list], [(1,), (2,)])
+        self.assertEqual(len(self.client.releases), 1)
+        self.public_check.assert_called_once()
+
+    def test_published_release_missing_manifest_is_repaired_without_clobber(self):
+        self.client.fail_once = self.index.name
+        with self.assertRaisesRegex(ReleaseError, "upload failure"):
+            self.publish()
+        prior = self.client.releases[0]
+        prior["draft"] = False
+        prior["assets"] = [asset for asset in prior["assets"] if asset["name"] == self.apk.name]
+        self.client.calls.clear()
+        with patch.object(github, "source_snapshot", return_value=dict(SOURCE, sourceCommit=None)):
+            self.publish(resume=True)
+        actions = [call[1] for call in self.client.calls if call[0] == "release"]
+        self.assertEqual(actions, ["download", "upload", "download", "edit"])
+        uploaded = next(call for call in self.client.calls if call[:2] == ("release", "upload"))
+        self.assertEqual(uploaded[3:uploaded.index("--repo")], (self.index,))
+        self.assertEqual(self.client.uploads[self.apk.name], self.apk.read_bytes())
+
+    def test_dirty_checkout_cannot_resume_when_source_tag_does_not_match(self):
+        with patch.object(github, "source_snapshot", return_value=dict(SOURCE, sourceCommit=None)):
+            with self.assertRaisesRegex(ReleaseError, "matching pushed source tag"):
+                self.publish(resume=True)
+        self.assertEqual(self.client.releases, [])
+
+    def test_cli_error_names_subcommand_and_exit_status_and_redacts_tokens(self):
+        error = subprocess.CompletedProcess([], 1, "", "HTTP 403 with gho_aSensitiveToken")
+        with patch.object(github.subprocess, "run", return_value=error), self.assertRaisesRegex(
+            ReleaseError, r"gh release upload failed \(exit 1\)\. HTTP 403 with \[redacted\]"
+        ):
+            github.command("gh", "release", "upload", TAG, self.apk)
 
     def test_different_existing_tags_and_duplicate_releases_are_rejected(self):
         self.client.refs["origin"] = "b" * 40
@@ -198,12 +242,14 @@ class PublishTest(unittest.TestCase):
     def test_public_verification_reads_stable_and_versioned_manifests_and_matches_apk(self):
         repo = self.client.repo
         self.meta["apkUrl"] = asset_url(repo, TAG, self.apk.name)
-        with patch("sharedledger_release.public_json", return_value=self.meta) as get, patch(
+        latest = dict(tag_name=TAG, draft=False, prerelease=False)
+        with patch("sharedledger_release.public_json", side_effect=[latest, self.meta, self.meta]) as get, patch(
             "sharedledger_release.public_file", side_effect=lambda url, output: shutil.copyfile(self.apk, output)
         ):
             verify_published(repo, TAG, self.apk, self.meta, self.root)
         self.assertEqual([call.args[0] for call in get.call_args_list],
-                         [manifest_url(repo), asset_url(repo, TAG, self.index.name)])
+                         [f"https://api.github.com/repos/{repo}/releases/latest",
+                          asset_url(repo, TAG, self.index.name), manifest_url(repo)])
 
 
 if __name__ == "__main__":

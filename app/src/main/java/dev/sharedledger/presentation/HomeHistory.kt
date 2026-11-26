@@ -266,12 +266,14 @@ fun HistoryScreen(state: LedgerState, vm: LedgerViewModel, visit: Int, openEntry
                     if (members.isNotEmpty()) Select("Payer", state.filters.payer, listOf(null) + members.keys, { members[it] ?: "All members" }, Modifier.fillMaxWidth()) {
                         vm.filters.value = state.filters.copy(payer = it)
                     }
-                    Field("Minimum in ${budget?.currency.orEmpty()}", min, { min = it }, Modifier.onFocusChanged { minimumFocused = it.hasFocus })
-                    Field("Maximum in ${budget?.currency.orEmpty()}", max, { max = it }, Modifier.onFocusChanged { maximumFocused = it.hasFocus })
+                    MonetaryTextField("Minimum in ${budget?.currency.orEmpty()}", min, { min = it },
+                        Modifier.fillMaxWidth().onFocusChanged { minimumFocused = it.hasFocus })
+                    MonetaryTextField("Maximum in ${budget?.currency.orEmpty()}", max, { max = it },
+                        Modifier.fillMaxWidth().onFocusChanged { maximumFocused = it.hasFocus })
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Spacer(Modifier.weight(1f))
                         TextButton({
-                            val lower = parseMoney(min); val upper = parseMoney(max)
+                            val lower = parseCurrencyInput(min); val upper = parseCurrencyInput(max)
                             if (min.isNotBlank() && lower == null || max.isNotBlank() && upper == null || lower != null && upper != null && lower > upper)
                                 vm.notice("Enter a valid amount range.")
                             else vm.filters.value = state.filters.copy(minimum = lower, maximum = upper)
